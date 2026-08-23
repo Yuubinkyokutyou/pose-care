@@ -917,6 +917,12 @@ ApplicationWindow {
                                     AppToggle { theme: appTheme; label: "次回からタスクトレイで起動する"; checked: settingsPage.stagedMinimized; onToggled: settingsPage.stagedMinimized = checked }
                                 }
                             }
+
+                            UpdateCard {
+                                width: parent.width
+                                theme: appTheme
+                                updateController: controller
+                            }
                         }
                     }
                 }
