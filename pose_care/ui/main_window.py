@@ -6,6 +6,7 @@ from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
+    QButtonGroup,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -25,7 +26,8 @@ from PySide6.QtWidgets import (
 )
 
 from pose_care.camera import CameraWorker
-from pose_care.config import SettingsStore, model_path
+from pose_care.config import SettingsStore, history_path, model_path
+from pose_care.history import PostureHistory
 from pose_care.models import (
     POSTURE_FEATURE_VERSION,
     AppSettings,
@@ -36,7 +38,14 @@ from pose_care.notifications import WindowsNotifier
 from pose_care.posture import PostureDetector
 from pose_care.ui.dialogs import RegistrationDialog
 from pose_care.ui.style import COLORS
-from pose_care.ui.widgets import MetricBlock, SpineCompass, VideoLabel
+from pose_care.ui.widgets import (
+    MetricBlock,
+    ProfileBreakdownChart,
+    SpineCompass,
+    StatisticsCard,
+    TimelineChart,
+    VideoLabel,
+)
 
 
 class ProfileRow(QFrame):
@@ -87,6 +96,9 @@ class MainWindow(QMainWindow):
         self._first_run_prompted = False
         self._tray_hint_shown = False
         self._last_state = DetectionState(kind="starting")
+        self.history = PostureHistory(history_path())
+        self.statistics_period = "day"
+        self._history_closed = False
 
         self.setWindowTitle("PoseCare")
         self.setWindowIcon(icon)
@@ -99,6 +111,10 @@ class MainWindow(QMainWindow):
         self._render_profiles()
         self._set_detection_state(self._last_state)
         self._start_camera()
+        self.statistics_timer = QTimer(self)
+        self.statistics_timer.setInterval(60_000)
+        self.statistics_timer.timeout.connect(self._refresh_statistics_if_visible)
+        self.statistics_timer.start()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -129,15 +145,20 @@ class MainWindow(QMainWindow):
         self.monitor_nav.setCheckable(True)
         self.monitor_nav.setChecked(True)
         self.monitor_nav.clicked.connect(lambda: self._switch_page(0))
+        self.statistics_nav = QPushButton("  統計情報")
+        self.statistics_nav.setObjectName("navButton")
+        self.statistics_nav.setCheckable(True)
+        self.statistics_nav.clicked.connect(lambda: self._switch_page(1))
         self.settings_nav = QPushButton("  設定")
         self.settings_nav.setObjectName("navButton")
         self.settings_nav.setCheckable(True)
-        self.settings_nav.clicked.connect(lambda: self._switch_page(1))
+        self.settings_nav.clicked.connect(lambda: self._switch_page(2))
         nav_layout.addWidget(self.monitor_nav)
+        nav_layout.addWidget(self.statistics_nav)
         nav_layout.addWidget(self.settings_nav)
         nav_layout.addStretch(1)
 
-        privacy = QLabel("映像は保存・送信されません\nすべてこのPC内で処理します")
+        privacy = QLabel("映像・骨格は保存されません\n判定履歴だけをこのPC内に記録")
         privacy.setObjectName("muted")
         privacy.setWordWrap(True)
         privacy.setStyleSheet(f"color: {COLORS['muted']}; font-size: 10px; line-height: 1.4;")
@@ -145,6 +166,7 @@ class MainWindow(QMainWindow):
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_monitor_page())
+        self.pages.addWidget(self._build_statistics_page())
         self.pages.addWidget(self._build_settings_page())
         root_layout.addWidget(nav)
         root_layout.addWidget(self.pages, 1)
@@ -240,6 +262,101 @@ class MainWindow(QMainWindow):
         right.addWidget(telemetry_card, 1)
         content.addLayout(right, 3)
         layout.addLayout(content, 1)
+        return page
+
+    def _build_statistics_page(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(30, 25, 30, 28)
+        page_layout.setSpacing(18)
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(3)
+        eyebrow = QLabel("POSTURE HISTORY")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("統計情報")
+        title.setObjectName("pageTitle")
+        self.statistics_updated = QLabel("判定結果をこのPC内で集計します")
+        self.statistics_updated.setObjectName("muted")
+        title_col.addWidget(eyebrow)
+        title_col.addWidget(title)
+        title_col.addWidget(self.statistics_updated)
+        header.addLayout(title_col)
+        header.addStretch(1)
+
+        period_frame = QFrame()
+        period_frame.setObjectName("card")
+        period_layout = QHBoxLayout(period_frame)
+        period_layout.setContentsMargins(4, 4, 4, 4)
+        period_layout.setSpacing(0)
+        self.period_group = QButtonGroup(self)
+        self.period_group.setExclusive(True)
+        for text, period in (("1日", "day"), ("1週間", "week"), ("1ヶ月", "month")):
+            button = QPushButton(text)
+            button.setObjectName("periodButton")
+            button.setCheckable(True)
+            button.setChecked(period == self.statistics_period)
+            button.clicked.connect(lambda checked=False, value=period: self._set_statistics_period(value))
+            self.period_group.addButton(button)
+            period_layout.addWidget(button)
+        header.addWidget(period_frame)
+        page_layout.addLayout(header)
+
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(12)
+        self.good_ratio_card = StatisticsCard("良好率", COLORS["signal"])
+        self.monitored_card = StatisticsCard("監視できた時間", COLORS["blue"])
+        self.bad_time_card = StatisticsCard("悪い姿勢", COLORS["danger"])
+        self.alert_count_card = StatisticsCard("姿勢通知", COLORS["amber"])
+        summary_row.addWidget(self.good_ratio_card)
+        summary_row.addWidget(self.monitored_card)
+        summary_row.addWidget(self.bad_time_card)
+        summary_row.addWidget(self.alert_count_card)
+        page_layout.addLayout(summary_row)
+
+        timeline_card = QFrame()
+        timeline_card.setObjectName("card")
+        timeline_layout = QVBoxLayout(timeline_card)
+        timeline_layout.setContentsMargins(22, 18, 22, 16)
+        timeline_layout.setSpacing(5)
+        timeline_head = QHBoxLayout()
+        timeline_title_col = QVBoxLayout()
+        timeline_title_col.setSpacing(2)
+        timeline_title = QLabel("姿勢の推移")
+        timeline_title.setObjectName("sectionTitle")
+        self.timeline_note = QLabel("時間ごとの監視結果")
+        self.timeline_note.setObjectName("muted")
+        timeline_title_col.addWidget(timeline_title)
+        timeline_title_col.addWidget(self.timeline_note)
+        timeline_head.addLayout(timeline_title_col)
+        timeline_head.addStretch(1)
+        good_legend = QLabel("● 良好")
+        good_legend.setStyleSheet(f"color: {COLORS['signal']};")
+        bad_legend = QLabel("● 悪い姿勢")
+        bad_legend.setStyleSheet(f"color: {COLORS['danger']};")
+        timeline_head.addWidget(good_legend)
+        timeline_head.addSpacing(10)
+        timeline_head.addWidget(bad_legend)
+        timeline_layout.addLayout(timeline_head)
+        self.timeline_chart = TimelineChart()
+        timeline_layout.addWidget(self.timeline_chart, 1)
+        page_layout.addWidget(timeline_card, 1)
+
+        breakdown_card = QFrame()
+        breakdown_card.setObjectName("card")
+        breakdown_layout = QVBoxLayout(breakdown_card)
+        breakdown_layout.setContentsMargins(22, 18, 22, 16)
+        breakdown_layout.setSpacing(4)
+        breakdown_title = QLabel("悪い姿勢の内訳")
+        breakdown_title.setObjectName("sectionTitle")
+        breakdown_note = QLabel("登録した姿勢ごとの検知時間（上位5件）")
+        breakdown_note.setObjectName("muted")
+        breakdown_layout.addWidget(breakdown_title)
+        breakdown_layout.addWidget(breakdown_note)
+        self.profile_breakdown = ProfileBreakdownChart()
+        breakdown_layout.addWidget(self.profile_breakdown)
+        page_layout.addWidget(breakdown_card)
         return page
 
     def _build_settings_page(self) -> QWidget:
@@ -407,7 +524,45 @@ class MainWindow(QMainWindow):
     def _switch_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
         self.monitor_nav.setChecked(index == 0)
-        self.settings_nav.setChecked(index == 1)
+        self.statistics_nav.setChecked(index == 1)
+        self.settings_nav.setChecked(index == 2)
+        if index == 1:
+            self._refresh_statistics()
+
+    def _set_statistics_period(self, period: str) -> None:
+        self.statistics_period = period
+        self._refresh_statistics()
+
+    def _refresh_statistics_if_visible(self) -> None:
+        if self.pages.currentIndex() == 1:
+            self._refresh_statistics()
+
+    def _refresh_statistics(self) -> None:
+        summary = self.history.summarize(self.statistics_period)
+        ratio = "—" if summary.good_ratio is None else f"{summary.good_ratio * 100:.0f}%"
+        monitored = self._format_duration(summary.monitored_seconds)
+        good_time = self._format_duration(summary.good_seconds)
+        bad_time = self._format_duration(summary.bad_seconds)
+        self.good_ratio_card.set_value(ratio, f"良好 {good_time}")
+        self.monitored_card.set_value(monitored, "姿勢を判定できた時間")
+        self.bad_time_card.set_value(bad_time, "確認中の時間も含みます")
+        self.alert_count_card.set_value(f"{summary.alert_count}回", "実際に送った姿勢通知")
+        self.timeline_chart.set_buckets(summary.timeline)
+        self.profile_breakdown.set_profiles(summary.bad_profiles)
+        self.timeline_note.setText(
+            "時間ごとの監視結果" if summary.period == "day" else "日ごとの監視結果"
+        )
+        self.statistics_updated.setText(f"最終更新 {time.strftime('%H:%M')}　映像・骨格は保存しません")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total_minutes = int(seconds / 60.0)
+        if total_minutes >= 60:
+            hours, minutes = divmod(total_minutes, 60)
+            return f"{hours}時間{minutes:02d}分"
+        if total_minutes >= 1:
+            return f"{total_minutes}分"
+        return f"{int(seconds)}秒"
 
     def _toggle_monitoring(self, checked: bool) -> None:
         self.monitoring = checked
@@ -592,6 +747,7 @@ class MainWindow(QMainWindow):
 
     def _set_detection_state(self, state: DetectionState) -> None:
         self._last_state = state
+        self.history.observe(state.kind, state.profile_name)
         self.compass.set_state(state)
         if state.kind == "normal":
             title = "登録した正常姿勢です"
@@ -644,6 +800,7 @@ class MainWindow(QMainWindow):
     def _send_posture_notification(self, profile_name: str) -> None:
         title = "姿勢を戻しましょう"
         message = f"「{profile_name}」に近い状態が続いています。肩の力を抜いて座り直しましょう。"
+        self.history.record_alert(profile_name)
         if not self.notifier.send(title, message) and self.tray.isVisible():
             self.tray.showMessage(
                 title,
@@ -681,6 +838,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._quitting or not self.tray.isVisible():
             self._stop_camera()
+            self._close_history()
             event.accept()
             return
         event.ignore()
@@ -709,6 +867,12 @@ class MainWindow(QMainWindow):
         self._quitting = True
         self.tray.hide()
         self._stop_camera()
+        self._close_history()
         from PySide6.QtWidgets import QApplication
 
         QApplication.instance().quit()
+
+    def _close_history(self) -> None:
+        if not self._history_closed:
+            self.history.close()
+            self._history_closed = True

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from pose_care.models import DetectionState
+from pose_care.history import ProfileDuration, TimelineBucket
 from pose_care.ui.style import COLORS
 
 
@@ -100,3 +101,143 @@ class MetricBlock(QWidget):
 
     def set_value(self, value: float | None) -> None:
         self.value_label.setText("—" if value is None else f"{value:+.1f}{self.suffix}")
+
+
+class StatisticsCard(QWidget):
+    def __init__(self, label: str, accent: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("statisticsCard")
+        self.setMinimumHeight(112)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(3)
+        caption = QLabel(label)
+        caption.setObjectName("muted")
+        self.value_label = QLabel("—")
+        self.value_label.setObjectName("statisticsValue")
+        self.detail_label = QLabel("データを集計中")
+        self.detail_label.setObjectName("muted")
+        self.accent = accent
+        self.value_label.setStyleSheet(f"color: {accent};")
+        layout.addWidget(caption)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.detail_label)
+
+    def set_value(self, value: str, detail: str) -> None:
+        self.value_label.setText(value)
+        self.detail_label.setText(detail)
+
+
+class TimelineChart(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(235)
+        self._buckets: tuple[TimelineBucket, ...] = ()
+
+    def set_buckets(self, buckets: tuple[TimelineBucket, ...]) -> None:
+        self._buckets = buckets
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        if not self._buckets or sum(item.monitored_seconds for item in self._buckets) <= 0.0:
+            painter.setPen(QColor(COLORS["muted"]))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "表示できる統計はまだありません")
+            painter.end()
+            return
+
+        left, right, top, bottom = 8.0, 8.0, 15.0, 34.0
+        chart = QRectF(left, top, max(1.0, self.width() - left - right), max(1.0, self.height() - top - bottom))
+        guide_pen = QPen(QColor(COLORS["line"]), 1)
+        guide_pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(guide_pen)
+        for fraction in (0.0, 0.5, 1.0):
+            y = chart.bottom() - (chart.height() * fraction)
+            painter.drawLine(QPointF(chart.left(), y), QPointF(chart.right(), y))
+
+        slot = chart.width() / len(self._buckets)
+        bar_width = max(4.0, min(18.0, slot * 0.62))
+        for index, bucket in enumerate(self._buckets):
+            x = chart.left() + (index * slot) + ((slot - bar_width) / 2.0)
+            coverage = min(1.0, bucket.monitored_seconds / max(1.0, bucket.capacity_seconds))
+            total_height = chart.height() * coverage
+            good_height = 0.0
+            if bucket.monitored_seconds > 0.0:
+                good_height = total_height * (bucket.good_seconds / bucket.monitored_seconds)
+            bad_height = max(0.0, total_height - good_height)
+            if good_height > 0.5:
+                painter.setBrush(QColor(COLORS["signal"]))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(
+                    QRectF(x, chart.bottom() - good_height, bar_width, good_height),
+                    min(3.0, bar_width / 2.0),
+                    min(3.0, bar_width / 2.0),
+                )
+            if bad_height > 0.5:
+                painter.setBrush(QColor(COLORS["danger"]))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(
+                    QRectF(x, chart.bottom() - total_height, bar_width, bad_height),
+                    min(3.0, bar_width / 2.0),
+                    min(3.0, bar_width / 2.0),
+                )
+
+            show_every = 4 if len(self._buckets) == 24 else (5 if len(self._buckets) > 10 else 1)
+            if index % show_every == 0 or index == len(self._buckets) - 1:
+                painter.setPen(QColor(COLORS["muted"]))
+                label_rect = QRectF(chart.left() + (index * slot) - (slot * 0.35), chart.bottom() + 8, slot * 1.7, 20)
+                painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, bucket.label)
+        painter.end()
+
+
+class ProfileBreakdownChart(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(180)
+        self._profiles: tuple[ProfileDuration, ...] = ()
+
+    def set_profiles(self, profiles: tuple[ProfileDuration, ...]) -> None:
+        self._profiles = profiles[:5]
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        if not self._profiles:
+            painter.setPen(QColor(COLORS["muted"]))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "この期間に悪い姿勢は記録されていません",
+            )
+            painter.end()
+            return
+
+        maximum = max(item.seconds for item in self._profiles)
+        row_height = min(38.0, max(28.0, self.height() / max(1, len(self._profiles))))
+        name_width = min(145.0, self.width() * 0.38)
+        value_width = 58.0
+        bar_left = name_width + 10.0
+        bar_width = max(20.0, self.width() - bar_left - value_width - 8.0)
+        for index, profile in enumerate(self._profiles):
+            y = 8.0 + (index * row_height)
+            painter.setPen(QColor(COLORS["text"]))
+            painter.drawText(QRectF(0, y, name_width, 20), Qt.AlignmentFlag.AlignVCenter, profile.name)
+            painter.setBrush(QColor(COLORS["line"]))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(QRectF(bar_left, y + 6, bar_width, 8), 4, 4)
+            filled = bar_width * (profile.seconds / max(1.0, maximum))
+            painter.setBrush(QColor(COLORS["danger"]))
+            painter.drawRoundedRect(QRectF(bar_left, y + 6, filled, 8), 4, 4)
+            painter.setPen(QColor(COLORS["muted"]))
+            minutes = profile.seconds / 60.0
+            value = f"{minutes:.0f}分" if minutes >= 1.0 else f"{profile.seconds:.0f}秒"
+            painter.drawText(
+                QRectF(bar_left + bar_width + 8, y, value_width, 20),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                value,
+            )
+        painter.end()
