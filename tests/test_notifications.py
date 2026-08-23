@@ -24,3 +24,23 @@ def test_native_notification_failure_returns_false():
     notifier = WindowsNotifier(toaster=BrokenToaster(), toast_factory=lambda fields: fields)
     assert not notifier.send("Title", "Body")
     assert notifier.last_error == "failed"
+
+
+def test_native_notification_runs_activation_callback_when_clicked():
+    class FakeToast:
+        def __init__(self, fields):
+            self.fields = fields
+            self.on_activated = None
+
+    toaster = FakeToaster()
+    notifier = WindowsNotifier(toaster=toaster, toast_factory=FakeToast)
+    activations = []
+
+    assert notifier.send(
+        "Title",
+        "Body",
+        lambda: activations.append("opened"),
+    )
+    toaster.sent[0].on_activated(object())
+
+    assert activations == ["opened"]

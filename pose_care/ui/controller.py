@@ -41,6 +41,7 @@ class PoseCareController(QObject):
     registrationChanged = Signal()
     feedbackChanged = Signal()
     navigateRequested = Signal(int)
+    notificationActivated = Signal()
 
     def __init__(
         self,
@@ -58,6 +59,7 @@ class PoseCareController(QObject):
         self.settings = settings
         self.icon = icon
         self.image_provider = image_provider
+        self.notificationActivated.connect(self.show_from_tray)
         self.detector = PostureDetector()
         self.notifier = notifier or WindowsNotifier()
         self.history = history or PostureHistory(history_path())
@@ -566,6 +568,7 @@ class PoseCareController(QObject):
         menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
+        self.tray.messageClicked.connect(self.notificationActivated.emit)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
 
@@ -787,7 +790,11 @@ class PoseCareController(QObject):
             "肩の力を抜いて座り直しましょう。"
         )
         self.history.record_alert(profile_name)
-        if not self.notifier.send(title, message) and self.tray.isVisible():
+        if not self.notifier.send(
+            title,
+            message,
+            self.notificationActivated.emit,
+        ) and self.tray.isVisible():
             self.tray.showMessage(
                 title,
                 message,
