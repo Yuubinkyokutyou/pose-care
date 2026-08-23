@@ -14,6 +14,8 @@ htmlcov/
 *.p12
 build/
 dist/
+release/
+release-notes.md
 *.spec
 *.egg-info/
 *.task
@@ -21,5 +23,6 @@ dist/
 settings.json
 pose-care.lock
 posture_history.sqlite3*
+pose_care/release.json
 .idea/
 .vscode/
