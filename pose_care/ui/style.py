@@ -74,6 +74,11 @@ QFrame#card, QFrame#settingsCard {{
     border: 1px solid {COLORS['line']};
     border-radius: 18px;
 }}
+QWidget#statisticsCard {{
+    background: {COLORS['surface']};
+    border: 1px solid {COLORS['line']};
+    border-radius: 15px;
+}}
 QFrame#videoFrame {{
     background: #060B12;
     border: 1px solid {COLORS['line']};
@@ -108,6 +113,11 @@ QLabel#metricValue {{
     font-family: "Cascadia Mono", "Consolas";
     font-size: 17px;
     font-weight: 600;
+}}
+QLabel#statisticsValue {{
+    font-family: "Cascadia Mono", "Consolas";
+    font-size: 25px;
+    font-weight: 700;
 }}
 QPushButton {{
     background: {COLORS['surface_high']};
@@ -153,6 +163,17 @@ QPushButton#navButton:checked {{
     background: {COLORS['surface_high']};
     color: {COLORS['signal']};
     border-left: 3px solid {COLORS['signal']};
+}}
+QPushButton#periodButton {{
+    background: transparent;
+    color: {COLORS['muted']};
+    border-radius: 8px;
+    border: none;
+    padding: 7px 14px;
+}}
+QPushButton#periodButton:checked {{
+    background: {COLORS['surface_high']};
+    color: {COLORS['signal']};
 }}
 QCheckBox {{
     spacing: 10px;

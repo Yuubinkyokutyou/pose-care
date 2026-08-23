@@ -20,5 +20,6 @@ dist/
 *.download
 settings.json
 pose-care.lock
+posture_history.sqlite3*
 .idea/
 .vscode/
