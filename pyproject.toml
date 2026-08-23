@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pose-care"
+version = "0.1.0"
+description = "Windows posture monitor powered by MediaPipe Pose Landmarker"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "mediapipe>=0.10.31,<1.1",
+  "numpy>=1.26,<3",
+  "opencv-contrib-python>=4.10,<5",
+  "PySide6>=6.8,<7",
+  "windows-toasts>=1.3.1,<2; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyinstaller>=6.11,<7",
+  "pytest>=8.3,<9",
+]
+
+[project.gui-scripts]
+pose-care = "pose_care.app:main"
+
+[tool.setuptools.packages.find]
+include = ["pose_care*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
