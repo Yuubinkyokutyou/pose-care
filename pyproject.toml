@@ -28,6 +28,9 @@ pose-care = "pose_care.app:main"
 [tool.setuptools.packages.find]
 include = ["pose_care*"]
 
+[tool.setuptools.package-data]
+pose_care = ["ui/qml/*.qml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
