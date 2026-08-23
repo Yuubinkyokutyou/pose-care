@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import sys
 import time
 from typing import Any
 
@@ -9,6 +11,7 @@ from PySide6.QtCore import (
     QElapsedTimer,
     QObject,
     QTimer,
+    Qt,
     Signal,
     Slot,
 )
@@ -28,6 +31,17 @@ from pose_care.models import (
 from pose_care.notifications import WindowsNotifier
 from pose_care.posture import PostureDetector, aggregate_features
 from pose_care.ui.image_provider import CameraImageProvider
+
+
+def _restore_native_window(window: Any) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        handle = int(window.winId())
+        ctypes.windll.user32.ShowWindow(handle, 9)  # SW_RESTORE
+        ctypes.windll.user32.SetForegroundWindow(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
 
 
 class PoseCareController(QObject):
@@ -583,7 +597,18 @@ class PoseCareController(QObject):
     def show_from_tray(self) -> None:
         if self._window is None:
             return
+        state = self._window.windowState()
+        if state & Qt.WindowState.WindowMinimized:
+            self._window.setWindowState(state & ~Qt.WindowState.WindowMinimized)
+        self._window.show()
         self._window.showNormal()
+        self._activate_window()
+        QTimer.singleShot(0, self._activate_window)
+
+    def _activate_window(self) -> None:
+        if self._window is None or not self._window.isVisible():
+            return
+        _restore_native_window(self._window)
         self._window.raise_()
         self._window.requestActivate()
 
