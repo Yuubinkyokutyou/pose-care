@@ -818,7 +818,7 @@ class PoseCareController(QObject):
             for profile in self.settings.profiles
         )
         if (
-            status == "カメラ準備完了"
+            status.startswith("カメラ準備完了")
             and not has_compatible_profile
             and not self._first_run_prompted
         ):
