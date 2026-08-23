@@ -1,33 +1,37 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QLockFile
-from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pose_care.config import SettingsStore, app_data_dir
-from pose_care.ui.main_window import MainWindow
-from pose_care.ui.style import APP_STYLE, configure_font, make_app_icon
+from pose_care.ui.controller import PoseCareController
+from pose_care.ui.image_provider import CameraImageProvider
+from pose_care.ui.style import configure_font, make_app_icon
 
 
 def _configure_windows_identity() -> None:
     if sys.platform != "win32":
         return
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PoseCare.Desktop.0.1")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PoseCare.Desktop.0.2")
     except (AttributeError, OSError):
         pass
 
 
 def main() -> int:
     _configure_windows_identity()
+    os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     application = QApplication(sys.argv)
     application.setApplicationName("PoseCare")
     application.setOrganizationName("PoseCare")
     application.setQuitOnLastWindowClosed(False)
     configure_font(application)
-    application.setStyleSheet(APP_STYLE)
     icon = make_app_icon()
     application.setWindowIcon(icon)
 
@@ -41,11 +45,23 @@ def main() -> int:
 
     store = SettingsStore()
     settings = store.load()
-    window = MainWindow(store, settings, icon)
-    if settings.start_minimized and settings.first_run_complete and QSystemTrayIcon.isSystemTrayAvailable():
-        window.hide()
-    else:
-        window.show()
+    image_provider = CameraImageProvider()
+    controller = PoseCareController(store, settings, icon, image_provider)
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("camera", image_provider)
+    engine.rootContext().setContextProperty("controller", controller)
+    qml_path = Path(__file__).parent / "ui" / "qml" / "Main.qml"
+    engine.load(qml_path)
+    if not engine.rootObjects():
+        controller.shutdown()
+        lock.unlock()
+        return 1
+
+    window = engine.rootObjects()[0]
+    controller.attach_window(window)
+    application.aboutToQuit.connect(controller.shutdown)
+    controller.start()
+    controller.show_initial_window()
     exit_code = application.exec()
     lock.unlock()
     return exit_code

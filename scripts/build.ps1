@@ -12,4 +12,5 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
     --windowed `
     --name PoseCare `
     --collect-binaries mediapipe `
+    --collect-data pose_care `
     (Join-Path $projectRoot "pose_care\__main__.py")
