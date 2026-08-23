@@ -37,6 +37,74 @@ def test_camera_image_provider_returns_latest_frame():
     assert size == QSize(16, 9)
     assert loaded.size() == QSize(8, 4)
 
+    provider.clear()
+    assert provider.requestImage("frame/2", QSize(), QSize()).isNull()
+
+
+def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
+    tmp_path, monkeypatch
+):
+    _application()
+    provider = CameraImageProvider()
+    user_idle_seconds = [0.5]
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        provider,
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        idle_seconds_provider=lambda: user_idle_seconds[0],
+    )
+    controller._idle_camera_timeout_seconds = 300.0
+    controller.camera_worker = object()
+    stopped = []
+    started = []
+
+    def stop_camera():
+        stopped.append(True)
+        controller.camera_worker = None
+
+    def start_camera():
+        started.append(True)
+        controller.camera_worker = object()
+
+    monkeypatch.setattr(controller, "_stop_camera", stop_camera)
+    monkeypatch.setattr(controller, "_start_camera", start_camera)
+    monkeypatch.setattr("pose_care.ui.controller.time.monotonic", lambda: 401.0)
+
+    # Fresh Windows input prevents release even when nobody has been detected.
+    controller._last_person_seen_at = 100.0
+    controller._check_camera_activity()
+    assert not stopped
+    assert not controller._camera_suspended_for_idle
+
+    # Recent pose detection also prevents release when Windows has been idle.
+    user_idle_seconds[0] = 301.0
+    controller._last_person_seen_at = 400.0
+    controller._check_camera_activity()
+    assert not stopped
+    assert not controller._camera_suspended_for_idle
+
+    controller._last_person_seen_at = 100.0
+    controller._check_camera_activity()
+    assert stopped == [True]
+    assert controller._camera_suspended_for_idle
+    assert controller.stateKind == "idle"
+    assert controller.cameraStatus == "無人・無操作のためカメラを停止しました"
+    controller._on_pose(None, [])
+    assert controller.stateKind == "idle"
+
+    # Any fresh keyboard/mouse input resumes the camera without changing the
+    # user's explicit monitoring setting.
+    user_idle_seconds[0] = 0.5
+    controller._check_camera_activity()
+    assert started == [True]
+    assert not controller._camera_suspended_for_idle
+    assert controller.stateKind == "starting"
+    assert controller.monitoring
+    controller.shutdown()
+
 
 def test_main_qml_loads_with_controller(tmp_path):
     application = _application()

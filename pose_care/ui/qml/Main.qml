@@ -285,7 +285,8 @@ ApplicationWindow {
                                 spacing: 8
                                 Text {
                                     anchors.horizontalCenter: parent.horizontalCenter
-                                    text: "POSTURE CAMERA"
+                                    text: controller.stateKind === "idle"
+                                          ? "CAMERA RELEASED" : "POSTURE CAMERA"
                                     color: theme.signal
                                     font.family: theme.dataFont
                                     font.pixelSize: 9
@@ -294,7 +295,9 @@ ApplicationWindow {
                                 }
                                 Text {
                                     anchors.horizontalCenter: parent.horizontalCenter
-                                    text: "カメラ映像を準備しています"
+                                    text: controller.stateKind === "idle"
+                                          ? "操作を検知すると自動で再開します"
+                                          : "カメラ映像を準備しています"
                                     color: theme.muted
                                     font.family: theme.bodyFont
                                     font.pixelSize: 12
@@ -319,11 +322,13 @@ ApplicationWindow {
                                         width: 6
                                         height: 6
                                         radius: 3
-                                        color: controller.monitoring ? theme.signal : theme.muted
+                                        color: controller.monitoring && controller.stateKind !== "idle"
+                                               ? theme.signal : theme.muted
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     Text {
-                                        text: controller.monitoring ? "LIVE / LOCAL" : "PAUSED"
+                                        text: controller.stateKind === "idle" ? "CAMERA OFF"
+                                              : controller.monitoring ? "LIVE / LOCAL" : "PAUSED"
                                         color: theme.text
                                         font.family: theme.dataFont
                                         font.pixelSize: 9
