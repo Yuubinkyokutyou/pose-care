@@ -47,3 +47,7 @@ class SettingsStore:
 
 def model_path() -> Path:
     return app_data_dir() / "models" / "pose_landmarker_lite.task"
+
+
+def history_path() -> Path:
+    return app_data_dir() / "posture_history.sqlite3"
