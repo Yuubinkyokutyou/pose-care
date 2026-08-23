@@ -63,3 +63,52 @@ def test_main_qml_loads_with_controller(tmp_path):
     controller.toggleMonitoring(False)
     assert not controller.monitoring
     controller.shutdown()
+
+
+def test_posture_notification_click_opens_window(tmp_path):
+    class FakeNotifier:
+        def __init__(self):
+            self.on_activated = None
+
+        def send(self, title, message, on_activated=None):
+            self.on_activated = on_activated
+            return True
+
+    class FakeWindow:
+        def __init__(self):
+            self.calls = []
+
+        def showNormal(self):
+            self.calls.append("showNormal")
+
+        def raise_(self):
+            self.calls.append("raise")
+
+        def requestActivate(self):
+            self.calls.append("requestActivate")
+
+    application = _application()
+    notifier = FakeNotifier()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=notifier,
+    )
+    window = FakeWindow()
+    controller.attach_window(window)
+
+    controller._send_posture_notification("猫背")
+    notifier.on_activated()
+    application.processEvents()
+
+    assert window.calls == ["showNormal", "raise", "requestActivate"]
+
+    window.calls.clear()
+    controller.tray.messageClicked.emit()
+    application.processEvents()
+
+    assert window.calls == ["showNormal", "raise", "requestActivate"]
+    controller.shutdown()

@@ -35,11 +35,18 @@ class WindowsNotifier:
     def available(self) -> bool:
         return self._toaster is not None and self._toast_factory is not None
 
-    def send(self, title: str, message: str) -> bool:
+    def send(
+        self,
+        title: str,
+        message: str,
+        on_activated: Callable[[], None] | None = None,
+    ) -> bool:
         if not self.available:
             return False
         try:
             toast = self._toast_factory([title, message])
+            if on_activated is not None:
+                toast.on_activated = lambda _: on_activated()
             self._toaster.show_toast(toast)
             self.last_error = ""
             return True
