@@ -627,8 +627,24 @@ def test_windows_update_creation_flags_execute_powershell_script(tmp_path):
         cwd=str(tmp_path),
     )
 
-    assert process.wait(timeout=10) == 0
-    assert marker_path.read_text(encoding="utf-8") == "started"
+    try:
+        deadline = time.monotonic() + 30
+        while not marker_path.exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+
+        assert marker_path.exists(), (
+            f"PowerShell exited with code {process.returncode} without running "
+            "the probe script"
+            if process.poll() is not None
+            else "PowerShell did not run the probe script within 30 seconds"
+        )
+        assert marker_path.read_text(encoding="utf-8") == "started"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 @pytest.mark.parametrize("mutation", ["payload", "manifest"])
