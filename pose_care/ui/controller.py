@@ -60,7 +60,8 @@ CAMERA_ACTIVITY_POLL_INTERVAL_MS = 1_000
 CAMERA_RESUME_GRACE_PERIOD_MS = 3_000
 CAMERA_RESUME_RETRY_BASE_MS = 3_000
 CAMERA_RESUME_RETRY_MAX_MS = 24_000
-CAMERA_RESUME_MAX_ATTEMPTS = 5
+CAMERA_RESUME_MAX_FAST_ATTEMPTS = 5
+CAMERA_RESUME_COOLDOWN_MS = 60_000
 
 
 class _LastInputInfo(ctypes.Structure):
@@ -1025,7 +1026,8 @@ class PoseCareController(QObject):
             return
         self._camera_recovery_attempts += 1
         self._camera_status = "カメラを再開しています"
-        self.uiChanged.emit()
+        self._camera_error_text = ""
+        self._set_detection_state(DetectionState(kind="starting"))
         self._start_camera()
 
     def _cancel_camera_recovery(self) -> None:
@@ -1100,27 +1102,33 @@ class PoseCareController(QObject):
         self._camera_status = f"姿勢モデルをダウンロードしています… {value}%"
         self.uiChanged.emit()
 
-    def _on_camera_error(self, message: str) -> None:
+    def _on_camera_error(self, message: str, retryable: bool = False) -> None:
         if self._camera_suspended_for_idle:
             return
-        if (
-            self._camera_recovery_active
-            and self._camera_recovery_attempts < CAMERA_RESUME_MAX_ATTEMPTS
-        ):
-            retry_delay_ms = min(
-                CAMERA_RESUME_RETRY_MAX_MS,
-                CAMERA_RESUME_RETRY_BASE_MS
-                * (2 ** max(0, self._camera_recovery_attempts - 1)),
-            )
+        if self._camera_recovery_active and retryable:
+            if self._camera_recovery_attempts < CAMERA_RESUME_MAX_FAST_ATTEMPTS:
+                retry_delay_ms = min(
+                    CAMERA_RESUME_RETRY_MAX_MS,
+                    CAMERA_RESUME_RETRY_BASE_MS
+                    * (2 ** max(0, self._camera_recovery_attempts - 1)),
+                )
+                self._camera_status = "顔認証の終了を待ってカメラ接続を再試行します"
+                self._camera_error_text = ""
+                self._set_detection_state(DetectionState(kind="starting"))
+            else:
+                retry_delay_ms = CAMERA_RESUME_COOLDOWN_MS
+                self._camera_status = message
+                self._camera_error_text = (
+                    "カメラを利用できません\n"
+                    "ほかのアプリを優先して、1分後に再試行します"
+                )
+                self._set_detection_state(DetectionState(kind="no_pose"))
             logger.warning(
                 "Camera resume attempt %s failed; retrying in %.1f seconds: %s",
                 self._camera_recovery_attempts,
                 retry_delay_ms / 1_000,
                 message,
             )
-            self._camera_status = "顔認証の終了を待ってカメラ接続を再試行します"
-            self._camera_error_text = ""
-            self._set_detection_state(DetectionState(kind="starting"))
             self._camera_retry_timer.start(retry_delay_ms)
             return
         self._cancel_camera_recovery()

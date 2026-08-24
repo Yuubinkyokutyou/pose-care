@@ -27,6 +27,14 @@ UPPER_BODY_CONNECTIONS = (
 )
 
 
+class CameraConnectionError(RuntimeError):
+    """A camera-open failure that may clear after another client releases it."""
+
+
+class CameraConfigurationError(RuntimeError):
+    """A camera selection or capability error that retrying cannot resolve."""
+
+
 def _shared_camera_groups(groups: Sequence[Any], color_kind: Any) -> list[Any]:
     """Deduplicate color cameras and prefer groups that include companion sensors."""
     group_by_color_source: dict[str, Any] = {}
@@ -86,7 +94,7 @@ class SharedCameraCapture:
             MediaFrameSourceKind.COLOR,
         )
         if self.camera_index >= len(groups):
-            raise RuntimeError(
+            raise CameraConfigurationError(
                 f"共有カメラ {self.camera_index} が見つかりません。"
                 "設定でカメラ番号を変更してください。"
             )
@@ -108,7 +116,9 @@ class SharedCameraCapture:
                 if source.info.source_kind == MediaFrameSourceKind.COLOR
             ]
             if not sources:
-                raise RuntimeError("共有カメラにRGB映像ソースがありません。")
+                raise CameraConfigurationError(
+                    "共有カメラにRGB映像ソースがありません。"
+                )
             source = min(
                 sources,
                 key=lambda item: (
@@ -121,16 +131,27 @@ class SharedCameraCapture:
             frame_arrived_token = reader.add_frame_arrived(self._on_frame_arrived)
             status = await reader.start_async()
             if status != MediaFrameReaderStartStatus.SUCCESS:
-                raise RuntimeError(
+                error_type = (
+                    CameraConnectionError
+                    if status
+                    in (
+                        MediaFrameReaderStartStatus.DEVICE_NOT_AVAILABLE,
+                        MediaFrameReaderStartStatus.EXCLUSIVE_CONTROL_NOT_AVAILABLE,
+                    )
+                    else CameraConfigurationError
+                )
+                raise error_type(
                     f"共有カメラを開始できませんでした（{status.name}）。"
                 )
-        except Exception:
+        except Exception as error:
             if reader is not None:
                 if frame_arrived_token is not None:
                     reader.remove_frame_arrived(frame_arrived_token)
                 reader.close()
             capture.close()
-            raise
+            if isinstance(error, (CameraConnectionError, CameraConfigurationError)):
+                raise
+            raise CameraConnectionError(str(error)) from error
 
         self._capture = capture
         self._reader = reader
@@ -279,7 +300,7 @@ class CameraWorker(QThread):
     pose_ready = Signal(object, object)
     status_changed = Signal(str)
     model_progress = Signal(int)
-    camera_error = Signal(str)
+    camera_error = Signal(str, bool)
     fps_changed = Signal(float)
 
     def __init__(self, camera_index: int, model_file: Path, parent=None) -> None:
@@ -310,7 +331,7 @@ class CameraWorker(QThread):
                 loop.close()
                 uninit_apartment()
         except Exception as error:
-            self.camera_error.emit(str(error))
+            self.camera_error.emit(str(error), isinstance(error, CameraConnectionError))
 
     async def _run_shared_camera(self) -> None:
         import mediapipe as mp

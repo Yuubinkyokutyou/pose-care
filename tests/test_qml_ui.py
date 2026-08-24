@@ -163,7 +163,7 @@ def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
 
     # A transient failure while Windows Hello still owns the camera should
     # remain in the starting state and retry instead of showing CAMERA OFFLINE.
-    controller._on_camera_error("camera still in use")
+    controller._on_camera_error("camera still in use", True)
     assert controller.cameraErrorText == ""
     assert controller._camera_retry_timer.isActive()
     assert controller.stateKind == "starting"
@@ -173,6 +173,59 @@ def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
     controller._on_camera_status("カメラ準備完了（共有モード）")
     assert not controller._camera_recovery_active
     assert not controller._camera_retry_timer.isActive()
+    controller.shutdown()
+
+
+def test_camera_resume_reports_permanent_error_without_retry(tmp_path):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+    controller._camera_recovery_active = True
+    controller._camera_recovery_attempts = 1
+
+    controller._on_camera_error("model initialization failed", False)
+
+    assert not controller._camera_recovery_active
+    assert not controller._camera_retry_timer.isActive()
+    assert controller.cameraErrorText.startswith("カメラを利用できません")
+    controller.shutdown()
+
+
+def test_camera_resume_keeps_low_priority_retry_after_fast_attempts(
+    tmp_path, monkeypatch
+):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+    controller._camera_recovery_active = True
+    controller._camera_recovery_attempts = 5
+
+    controller._on_camera_error("camera still in use", True)
+
+    assert controller._camera_recovery_active
+    assert controller._camera_retry_timer.isActive()
+    assert controller._camera_retry_timer.interval() == 60_000
+    assert "1分後に再試行" in controller.cameraErrorText
+
+    started = []
+    monkeypatch.setattr(controller, "_stop_camera", lambda: None)
+    monkeypatch.setattr(controller, "_start_camera", lambda: started.append(True))
+    controller._retry_camera_after_idle()
+    assert started == [True]
+    controller._on_camera_status("カメラ準備完了（共有モード）")
+    assert not controller._camera_recovery_active
     controller.shutdown()
 
 
