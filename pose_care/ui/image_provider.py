@@ -19,6 +19,10 @@ class CameraImageProvider(QQuickImageProvider):
         with self._lock:
             self._image = image.copy()
 
+    def clear(self) -> None:
+        with self._lock:
+            self._image = QImage()
+
     def requestImage(
         self,
         image_id: str,
