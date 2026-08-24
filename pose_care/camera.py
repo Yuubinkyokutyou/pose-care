@@ -35,6 +35,41 @@ class CameraConfigurationError(RuntimeError):
     """A camera selection or capability error that retrying cannot resolve."""
 
 
+_HRESULT_CAMERA_ACCESS_DENIED = -2_147_024_891  # 0x80070005
+_HRESULT_CAMERA_SHARING_VIOLATION = -2_147_024_864  # 0x80070020
+_HRESULT_UNSUPPORTED_CAPTURE_DEVICE = -1_072_844_856  # 0xC00DAFC8
+_WINERROR_ACCESS_DENIED = 5
+_WINERROR_SHARING_VIOLATION = 32
+
+
+def _normalized_error_code(error: Exception) -> int | None:
+    for value in (
+        getattr(error, "winerror", None),
+        getattr(error, "hresult", None),
+        error.args[0] if error.args else None,
+    ):
+        if isinstance(value, int):
+            unsigned = value & 0xFFFFFFFF
+            return unsigned - 0x100000000 if unsigned & 0x80000000 else unsigned
+    return None
+
+
+def _camera_open_error_type(error: Exception) -> type[RuntimeError]:
+    error_code = _normalized_error_code(error)
+    if error_code in (
+        _HRESULT_CAMERA_SHARING_VIOLATION,
+        _WINERROR_SHARING_VIOLATION,
+    ):
+        return CameraConnectionError
+    if error_code in (
+        _HRESULT_CAMERA_ACCESS_DENIED,
+        _HRESULT_UNSUPPORTED_CAPTURE_DEVICE,
+        _WINERROR_ACCESS_DENIED,
+    ):
+        return CameraConfigurationError
+    return CameraConfigurationError
+
+
 def _shared_camera_groups(groups: Sequence[Any], color_kind: Any) -> list[Any]:
     """Deduplicate color cameras and prefer groups that include companion sensors."""
     group_by_color_source: dict[str, Any] = {}
@@ -151,7 +186,7 @@ class SharedCameraCapture:
             capture.close()
             if isinstance(error, (CameraConnectionError, CameraConfigurationError)):
                 raise
-            raise CameraConnectionError(str(error)) from error
+            raise _camera_open_error_type(error)(str(error)) from error
 
         self._capture = capture
         self._reader = reader
