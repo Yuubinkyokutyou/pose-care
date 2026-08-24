@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $entryPoint = Join-Path $projectRoot "pose_care\__main__.py"
+$hookPath = Join-Path $projectRoot "scripts\pyinstaller_hooks"
 $buildPath = Join-Path $projectRoot "build"
 $distPath = Join-Path $projectRoot "dist"
 
@@ -26,6 +27,7 @@ try {
         --distpath $distPath `
         --workpath $buildPath `
         --specpath $projectRoot `
+        --additional-hooks-dir $hookPath `
         --collect-binaries mediapipe `
         --collect-data pose_care `
         $entryPoint
