@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import sys
+import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import (
     Property,
@@ -31,6 +34,25 @@ from pose_care.models import (
 from pose_care.notifications import WindowsNotifier
 from pose_care.posture import PostureDetector, aggregate_features
 from pose_care.ui.image_provider import CameraImageProvider
+from pose_care.updater import (
+    ApplicationUpdater,
+    PreparedUpdate,
+    UpdateCheck,
+    UpdateError,
+    UpdateProgress,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+_UPDATE_PROGRESS_RANGES: dict[str, tuple[float, float]] = {
+    "downloading_checksum": (0.0, 0.05),
+    "downloading": (0.05, 0.82),
+    "verifying": (0.82, 0.90),
+    "extracting": (0.90, 1.0),
+    "ready": (1.0, 1.0),
+}
 
 
 CAMERA_IDLE_TIMEOUT_SECONDS = 5 * 60.0
@@ -79,8 +101,12 @@ class PoseCareController(QObject):
     statisticsChanged = Signal()
     registrationChanged = Signal()
     feedbackChanged = Signal()
+    updateChanged = Signal()
     navigateRequested = Signal(int)
     notificationActivated = Signal()
+    _updateTaskFinished = Signal(str, object)
+    _updateTaskFailed = Signal(str, str)
+    _updateProgressReported = Signal(object)
 
     def __init__(
         self,
@@ -93,6 +119,7 @@ class PoseCareController(QObject):
         history: PostureHistory | None = None,
         notifier: WindowsNotifier | None = None,
         idle_seconds_provider: Callable[[], float] | None = None,
+        updater: ApplicationUpdater | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
@@ -104,6 +131,7 @@ class PoseCareController(QObject):
         self.notifier = notifier or WindowsNotifier()
         self._idle_seconds_provider = idle_seconds_provider or _seconds_since_last_user_input
         self.history = history or PostureHistory(history_path())
+        self.updater = updater or ApplicationUpdater()
         self.camera_worker: CameraWorker | None = None
         self.latest_feature: PoseFeature | None = None
         self.latest_landmarks: list[Any] = []
@@ -133,6 +161,14 @@ class PoseCareController(QObject):
         self._statistics_updated = "判定結果をこのPC内で集計します"
         self._save_feedback = ""
         self._notification_feedback = ""
+        self._latest_version = ""
+        self._update_state = "idle"
+        self._update_status = ""
+        self._update_progress = 0.0
+        self._update_check: UpdateCheck | None = None
+        self._prepared_update: PreparedUpdate | None = None
+        self._update_thread: threading.Thread | None = None
+        self._update_shutdown = threading.Event()
         self._registration_open = False
         self._registration_type = "bad"
         self._registration_first_run = False
@@ -146,6 +182,10 @@ class PoseCareController(QObject):
         self._registration_timer = QTimer(self)
         self._registration_timer.setInterval(70)
         self._registration_timer.timeout.connect(self._registration_tick)
+
+        self._updateTaskFinished.connect(self._on_update_task_finished)
+        self._updateTaskFailed.connect(self._on_update_task_failed)
+        self._updateProgressReported.connect(self._on_update_progress)
 
         self._statistics_timer = QTimer(self)
         self._statistics_timer.setInterval(60_000)
@@ -342,6 +382,31 @@ class PoseCareController(QObject):
         return self._notification_feedback
 
     notificationFeedback = Property(str, _get_notification_feedback, notify=feedbackChanged)
+
+    def _get_app_version(self) -> str:
+        return self.updater.current_build.tag
+
+    appVersion = Property(str, _get_app_version, notify=updateChanged)
+
+    def _get_latest_version(self) -> str:
+        return self._latest_version
+
+    latestVersion = Property(str, _get_latest_version, notify=updateChanged)
+
+    def _get_update_state(self) -> str:
+        return self._update_state
+
+    updateState = Property(str, _get_update_state, notify=updateChanged)
+
+    def _get_update_status(self) -> str:
+        return self._update_status
+
+    updateStatus = Property(str, _get_update_status, notify=updateChanged)
+
+    def _get_update_progress(self) -> float:
+        return self._update_progress
+
+    updateProgress = Property(float, _get_update_progress, notify=updateChanged)
 
     def _get_registration_open(self) -> bool:
         return self._registration_open
@@ -595,6 +660,170 @@ class PoseCareController(QObject):
         self._notification_feedback = ""
         self.feedbackChanged.emit()
 
+    @Slot()
+    def checkForUpdates(self) -> None:
+        if self._update_task_is_running():
+            return
+        self._discard_prepared_update()
+        self._update_check = None
+        self._latest_version = ""
+        self._update_state = "checking"
+        self._update_status = "GitHub Releasesを確認しています"
+        self._update_progress = 0.0
+        self.updateChanged.emit()
+        self._start_update_task(
+            "check",
+            lambda progress: self.updater.check_for_update(progress),
+        )
+
+    @Slot()
+    def installUpdate(self) -> None:
+        if self._update_task_is_running():
+            return
+        if self._update_state == "available" and self._update_check is not None:
+            if not self.updater.can_apply_update:
+                self._update_state = "error"
+                self._update_status = (
+                    "自動更新はWindows向けにビルドされたPoseCare.exeでのみ実行できます"
+                )
+                self.updateChanged.emit()
+                return
+            release = self._update_check.latest
+            self._update_state = "downloading"
+            self._update_status = "更新ファイルをダウンロードしています"
+            self._update_progress = 0.0
+            self.updateChanged.emit()
+            self._start_update_task(
+                "prepare",
+                lambda progress: self.updater.prepare_update(release, progress),
+            )
+            return
+        if self._update_state != "ready" or self._prepared_update is None:
+            self.checkForUpdates()
+            return
+
+        try:
+            self.updater.launch_update(
+                self._prepared_update,
+                self._on_update_progress,
+            )
+        except UpdateError as error:
+            self._update_state = "error"
+            self._update_status = str(error)
+            self.updateChanged.emit()
+            return
+        except Exception:
+            logger.exception("Unexpected failure while launching the update helper")
+            self._update_state = "error"
+            self._update_status = "更新プログラムを起動できませんでした"
+            self.updateChanged.emit()
+            return
+
+        # Ownership of the workspace has moved to the detached helper.  The
+        # normal shutdown path must not remove it while the helper is waiting.
+        self._prepared_update = None
+        self._update_status = "PoseCareを終了して更新を適用します"
+        self.updateChanged.emit()
+        self.quitApplication()
+
+    def _update_task_is_running(self) -> bool:
+        return self._update_thread is not None and self._update_thread.is_alive()
+
+    def _start_update_task(
+        self,
+        operation: str,
+        task: Callable[[Callable[[UpdateProgress], None]], Any],
+    ) -> None:
+        if self._update_task_is_running():
+            return
+
+        def run() -> None:
+            try:
+                result = task(self._updateProgressReported.emit)
+            except UpdateError as error:
+                if not self._update_shutdown.is_set():
+                    self._updateTaskFailed.emit(operation, str(error))
+                return
+            except Exception:
+                logger.exception("Unexpected failure in update operation %s", operation)
+                if not self._update_shutdown.is_set():
+                    self._updateTaskFailed.emit(
+                        operation,
+                        "更新処理で予期しないエラーが発生しました",
+                    )
+                return
+
+            if self._update_shutdown.is_set():
+                if isinstance(result, PreparedUpdate):
+                    result.cleanup()
+                return
+            self._updateTaskFinished.emit(operation, result)
+
+        self._update_thread = threading.Thread(
+            target=run,
+            name=f"PoseCare-update-{operation}",
+            daemon=True,
+        )
+        self._update_thread.start()
+
+    @Slot(object)
+    def _on_update_progress(self, progress: UpdateProgress) -> None:
+        if self._update_shutdown.is_set() or not isinstance(progress, UpdateProgress):
+            return
+        self._update_status = progress.message
+        if self._update_state == "checking":
+            self._update_progress = progress.percent / 100.0
+        elif self._update_state == "downloading":
+            start, end = _UPDATE_PROGRESS_RANGES.get(progress.stage, (0.0, 1.0))
+            self._update_progress = start + (end - start) * progress.percent / 100.0
+        self.updateChanged.emit()
+
+    @Slot(str, object)
+    def _on_update_task_finished(self, operation: str, result: object) -> None:
+        self._update_thread = None
+        if self._update_shutdown.is_set():
+            if isinstance(result, PreparedUpdate):
+                result.cleanup()
+            return
+        if operation == "check" and isinstance(result, UpdateCheck):
+            self._update_check = result
+            self._latest_version = result.latest.tag
+            self._update_progress = 1.0
+            if result.update_available:
+                self._update_state = "available"
+                self._update_status = f"{result.latest.tag} を利用できます"
+            else:
+                self._update_state = "upToDate"
+                self._update_status = "PoseCareは最新です"
+            self.updateChanged.emit()
+            return
+        if operation == "prepare" and isinstance(result, PreparedUpdate):
+            self._discard_prepared_update()
+            self._prepared_update = result
+            self._update_state = "ready"
+            self._update_status = "ダウンロード完了。再起動すると更新されます"
+            self._update_progress = 1.0
+            self.updateChanged.emit()
+            return
+        self._on_update_task_failed(operation, "更新処理の結果を読み取れませんでした")
+
+    @Slot(str, str)
+    def _on_update_task_failed(self, operation: str, message: str) -> None:
+        del operation
+        self._update_thread = None
+        if self._update_shutdown.is_set():
+            return
+        self._update_state = "error"
+        self._update_status = message
+        self._update_progress = 0.0
+        self.updateChanged.emit()
+
+    def _discard_prepared_update(self) -> None:
+        if self._prepared_update is None:
+            return
+        self._prepared_update.cleanup()
+        self._prepared_update = None
+
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(self.icon, self)
         self.tray.setToolTip("PoseCare — 姿勢を監視中")
@@ -684,6 +913,8 @@ class PoseCareController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        self._update_shutdown.set()
+        self._discard_prepared_update()
         self._registration_timer.stop()
         self._statistics_timer.stop()
         self._camera_activity_timer.stop()
