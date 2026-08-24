@@ -28,6 +28,7 @@ from pose_care.updater import (
     UpdateIntegrityError,
     UpdateNetworkError,
     UpdateNotSupportedError,
+    _WINDOWS_UPDATE_CREATION_FLAGS,
     is_release_newer,
     load_build_info,
     parse_release_tag,
@@ -536,7 +537,7 @@ def test_launch_update_is_disabled_for_source_and_non_windows_runs(tmp_path):
         updater.launch_update(prepared)
 
 
-def test_launch_update_starts_detached_rollback_helper_for_frozen_app(tmp_path):
+def test_launch_update_starts_background_rollback_helper_for_frozen_app(tmp_path):
     archive = _install_archive(
         {APPLICATION_EXECUTABLE: b"new executable", "_internal/app.dat": b"new"}
     )
@@ -586,10 +587,48 @@ def test_launch_update_starts_detached_rollback_helper_for_frozen_app(tmp_path):
     assert command[command.index("-ReadyPath") + 1] == str(result.ready_path)
     assert command[command.index("-ReadyToken") + 1] == result.ready_token
     assert kwargs["close_fds"] is True
-    assert kwargs["creationflags"] != 0
+    assert kwargs["creationflags"] == _WINDOWS_UPDATE_CREATION_FLAGS
+    assert not kwargs["creationflags"] & getattr(
+        subprocess, "DETACHED_PROCESS", 0x00000008
+    )
     assert kwargs["cwd"] == str(prepared.workspace.resolve())
     assert progress[-1].stage == "launching"
     assert progress[-1].percent == 100
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell regression")
+def test_windows_update_creation_flags_execute_powershell_script(tmp_path):
+    script_path = tmp_path / "probe.ps1"
+    marker_path = tmp_path / "powershell-started.txt"
+    script_path.write_text(
+        "param([string]$MarkerPath)\n"
+        'Set-Content -LiteralPath $MarkerPath -Value "started" -NoNewline\n',
+        encoding="utf-8-sig",
+    )
+
+    process = subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-MarkerPath",
+            str(marker_path),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=_WINDOWS_UPDATE_CREATION_FLAGS,
+        cwd=str(tmp_path),
+    )
+
+    assert process.wait(timeout=10) == 0
+    assert marker_path.read_text(encoding="utf-8") == "started"
 
 
 @pytest.mark.parametrize("mutation", ["payload", "manifest"])
