@@ -57,6 +57,11 @@ _UPDATE_PROGRESS_RANGES: dict[str, tuple[float, float]] = {
 
 CAMERA_IDLE_TIMEOUT_SECONDS = 5 * 60.0
 CAMERA_ACTIVITY_POLL_INTERVAL_MS = 1_000
+CAMERA_RESUME_GRACE_PERIOD_MS = 3_000
+CAMERA_RESUME_RETRY_BASE_MS = 3_000
+CAMERA_RESUME_RETRY_MAX_MS = 24_000
+CAMERA_RESUME_MAX_FAST_ATTEMPTS = 5
+CAMERA_RESUME_COOLDOWN_MS = 60_000
 
 
 class _LastInputInfo(ctypes.Structure):
@@ -138,6 +143,8 @@ class PoseCareController(QObject):
         self._window: Any | None = None
         self._monitoring = True
         self._camera_suspended_for_idle = False
+        self._camera_recovery_active = False
+        self._camera_recovery_attempts = 0
         self._last_person_seen_at = time.monotonic()
         self._idle_camera_timeout_seconds = CAMERA_IDLE_TIMEOUT_SECONDS
         self._quitting = False
@@ -194,6 +201,9 @@ class PoseCareController(QObject):
         self._camera_activity_timer = QTimer(self)
         self._camera_activity_timer.setInterval(CAMERA_ACTIVITY_POLL_INTERVAL_MS)
         self._camera_activity_timer.timeout.connect(self._check_camera_activity)
+        self._camera_retry_timer = QTimer(self)
+        self._camera_retry_timer.setSingleShot(True)
+        self._camera_retry_timer.timeout.connect(self._retry_camera_after_idle)
         self._build_tray()
         self._refresh_statistics()
 
@@ -918,6 +928,7 @@ class PoseCareController(QObject):
         self._registration_timer.stop()
         self._statistics_timer.stop()
         self._camera_activity_timer.stop()
+        self._cancel_camera_recovery()
         self._stop_camera()
         if not self._history_closed:
             self.history.close()
@@ -939,6 +950,7 @@ class PoseCareController(QObject):
         self.camera_worker.start()
 
     def _restart_camera(self) -> None:
+        self._cancel_camera_recovery()
         self._camera_suspended_for_idle = False
         self._last_person_seen_at = time.monotonic()
         self._camera_status = "カメラを切り替えています"
@@ -977,6 +989,7 @@ class PoseCareController(QObject):
             self._suspend_camera_for_idle()
 
     def _suspend_camera_for_idle(self) -> None:
+        self._cancel_camera_recovery()
         self._camera_suspended_for_idle = True
         self.detector.reset()
         self.latest_feature = None
@@ -992,11 +1005,35 @@ class PoseCareController(QObject):
 
     def _resume_camera_after_idle(self) -> None:
         self._camera_suspended_for_idle = False
+        self._camera_recovery_active = True
+        self._camera_recovery_attempts = 0
         self._last_person_seen_at = time.monotonic()
-        self._camera_status = "操作を検知したためカメラを再開しています"
+        self._camera_status = "顔認証の終了を待ってカメラを再開します"
         self._fps_text = "解析 — fps"
         self._set_detection_state(DetectionState(kind="starting"))
+        self._camera_retry_timer.start(CAMERA_RESUME_GRACE_PERIOD_MS)
+
+    def _retry_camera_after_idle(self) -> None:
+        self._camera_retry_timer.stop()
+        if (
+            not self._camera_recovery_active
+            or self._camera_suspended_for_idle
+            or self._quitting
+        ):
+            return
+        self._stop_camera()
+        if self._quitting:
+            return
+        self._camera_recovery_attempts += 1
+        self._camera_status = "カメラを再開しています"
+        self._camera_error_text = ""
+        self._set_detection_state(DetectionState(kind="starting"))
         self._start_camera()
+
+    def _cancel_camera_recovery(self) -> None:
+        self._camera_retry_timer.stop()
+        self._camera_recovery_active = False
+        self._camera_recovery_attempts = 0
 
     def _on_frame(self, image: Any) -> None:
         if self._camera_suspended_for_idle:
@@ -1041,6 +1078,8 @@ class PoseCareController(QObject):
     def _on_camera_status(self, status: str) -> None:
         if self._camera_suspended_for_idle:
             return
+        if status.startswith("カメラ準備完了"):
+            self._cancel_camera_recovery()
         self._camera_status = status
         self.uiChanged.emit()
         has_compatible_profile = any(
@@ -1063,9 +1102,36 @@ class PoseCareController(QObject):
         self._camera_status = f"姿勢モデルをダウンロードしています… {value}%"
         self.uiChanged.emit()
 
-    def _on_camera_error(self, message: str) -> None:
+    def _on_camera_error(self, message: str, retryable: bool = False) -> None:
         if self._camera_suspended_for_idle:
             return
+        if self._camera_recovery_active and retryable:
+            if self._camera_recovery_attempts < CAMERA_RESUME_MAX_FAST_ATTEMPTS:
+                retry_delay_ms = min(
+                    CAMERA_RESUME_RETRY_MAX_MS,
+                    CAMERA_RESUME_RETRY_BASE_MS
+                    * (2 ** max(0, self._camera_recovery_attempts - 1)),
+                )
+                self._camera_status = "顔認証の終了を待ってカメラ接続を再試行します"
+                self._camera_error_text = ""
+                self._set_detection_state(DetectionState(kind="starting"))
+            else:
+                retry_delay_ms = CAMERA_RESUME_COOLDOWN_MS
+                self._camera_status = message
+                self._camera_error_text = (
+                    "カメラを利用できません\n"
+                    "ほかのアプリを優先して、1分後に再試行します"
+                )
+                self._set_detection_state(DetectionState(kind="no_pose"))
+            logger.warning(
+                "Camera resume attempt %s failed; retrying in %.1f seconds: %s",
+                self._camera_recovery_attempts,
+                retry_delay_ms / 1_000,
+                message,
+            )
+            self._camera_retry_timer.start(retry_delay_ms)
+            return
+        self._cancel_camera_recovery()
         self._camera_status = message
         self._camera_error_text = "カメラを利用できません\n設定でカメラ番号を確認してください"
         self._set_detection_state(DetectionState(kind="no_pose"))

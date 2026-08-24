@@ -6,7 +6,8 @@ import pytest
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QColor, QImage
 
-from pose_care.camera import _shared_camera_groups
+from pose_care.camera import _camera_open_error_type, _shared_camera_groups
+from pose_care.camera import CameraConfigurationError, CameraConnectionError
 from pose_care.camera import SharedCameraCapture
 
 
@@ -36,6 +37,25 @@ def test_shared_camera_groups_deduplicate_and_prefer_companion_sensors():
     )
 
     assert groups == [combined, second_camera]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_type"),
+    [
+        (-2_147_024_864, CameraConnectionError),  # 0x80070020 sharing violation
+        (32, CameraConnectionError),
+        (-2_147_024_891, CameraConfigurationError),  # 0x80070005 access denied
+        (5, CameraConfigurationError),
+        (-1_072_844_856, CameraConfigurationError),  # 0xC00DAFC8 unsupported
+        (-12345, CameraConfigurationError),
+    ],
+)
+def test_camera_open_error_type_only_retries_known_contention(
+    error_code, expected_type
+):
+    error = OSError(error_code, "camera initialization failed")
+
+    assert _camera_open_error_type(error) is expected_type
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="WinRT is only available on Windows")
