@@ -149,13 +149,30 @@ def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
     assert controller.stateKind == "idle"
 
     # Any fresh keyboard/mouse input resumes the camera without changing the
-    # user's explicit monitoring setting.
+    # user's explicit monitoring setting. Give Windows Hello time to release
+    # the camera before trying to reconnect.
     user_idle_seconds[0] = 0.5
     controller._check_camera_activity()
+    assert started == []
+    assert controller._camera_retry_timer.isActive()
+    controller._retry_camera_after_idle()
     assert started == [True]
     assert not controller._camera_suspended_for_idle
     assert controller.stateKind == "starting"
     assert controller.monitoring
+
+    # A transient failure while Windows Hello still owns the camera should
+    # remain in the starting state and retry instead of showing CAMERA OFFLINE.
+    controller._on_camera_error("camera still in use")
+    assert controller.cameraErrorText == ""
+    assert controller._camera_retry_timer.isActive()
+    assert controller.stateKind == "starting"
+
+    controller._retry_camera_after_idle()
+    assert started == [True, True]
+    controller._on_camera_status("カメラ準備完了（共有モード）")
+    assert not controller._camera_recovery_active
+    assert not controller._camera_retry_timer.isActive()
     controller.shutdown()
 
 
