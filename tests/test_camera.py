@@ -75,6 +75,7 @@ def test_copy_latest_frame_decodes_native_jpeg_buffer():
     memoryview(native_buffer)[:] = bytes(encoded)
     reference = SimpleNamespace(
         buffer_media_frame=SimpleNamespace(buffer=native_buffer),
+        video_media_frame=None,
         close=lambda: None,
     )
     reader = SimpleNamespace(try_acquire_latest_frame=lambda: reference)
@@ -83,6 +84,42 @@ def test_copy_latest_frame_decodes_native_jpeg_buffer():
 
     assert frame is not None
     assert frame.shape == (2, 4, 3)
+    assert frame.dtype == np.uint8
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WinRT is only available on Windows")
+def test_copy_latest_frame_prefers_nv12_software_bitmap_over_raw_buffer():
+    from winrt.windows.graphics.imaging import (
+        BitmapAlphaMode,
+        BitmapPixelFormat,
+        SoftwareBitmap,
+    )
+    from winrt.windows.storage.streams import Buffer
+
+    width = 2
+    height = 2
+    nv12_pixels = bytes((96, 96, 96, 96, 128, 128))
+    nv12_buffer = Buffer(len(nv12_pixels))
+    nv12_buffer.length = len(nv12_pixels)
+    memoryview(nv12_buffer)[:] = nv12_pixels
+    bitmap = SoftwareBitmap(
+        BitmapPixelFormat.NV12,
+        width,
+        height,
+        BitmapAlphaMode.IGNORE,
+    )
+    bitmap.copy_from_buffer(nv12_buffer)
+    reference = SimpleNamespace(
+        buffer_media_frame=SimpleNamespace(buffer=nv12_buffer),
+        video_media_frame=SimpleNamespace(software_bitmap=bitmap),
+        close=lambda: None,
+    )
+    reader = SimpleNamespace(try_acquire_latest_frame=lambda: reference)
+
+    frame = SharedCameraCapture._copy_latest_frame(reader)
+
+    assert frame is not None
+    assert frame.shape == (height, width, 3)
     assert frame.dtype == np.uint8
 
 
