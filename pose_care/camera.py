@@ -225,54 +225,50 @@ class SharedCameraCapture:
         bitmap = None
         converted_bitmap = None
         try:
-            buffered_frame = reference.buffer_media_frame
-            if buffered_frame is not None:
-                encoded_buffer = buffered_frame.buffer
-                encoded = bytes(memoryview(encoded_buffer)[:encoded_buffer.length])
-                image = QImage.fromData(encoded)
-                if image.isNull():
-                    raise RuntimeError("共有カメラの圧縮フレームを展開できません。")
-                image = image.convertToFormat(QImage.Format.Format_RGB888)
-                width, height = image.width(), image.height()
-                bytes_per_line = image.bytesPerLine()
-                pixels = np.frombuffer(
-                    image.constBits(),
-                    dtype=np.uint8,
-                    count=bytes_per_line * height,
-                ).reshape((height, bytes_per_line))
-                rgb = pixels[:, : width * 3].reshape((height, width, 3))
-                return np.ascontiguousarray(rgb[:, ::-1])
-
             video_frame = reference.video_media_frame
-            if video_frame is None:
-                return None
-            bitmap = video_frame.software_bitmap
-            if bitmap is None:
-                return None
-
-            from winrt.windows.graphics.imaging import (
-                BitmapAlphaMode,
-                BitmapPixelFormat,
-                SoftwareBitmap,
-            )
-            from winrt.windows.storage.streams import Buffer
-
-            if bitmap.bitmap_pixel_format != BitmapPixelFormat.BGRA8:
-                converted_bitmap = SoftwareBitmap.convert(
-                    bitmap,
-                    BitmapPixelFormat.BGRA8,
-                    BitmapAlphaMode.IGNORE,
+            if video_frame is not None:
+                bitmap = video_frame.software_bitmap
+            if bitmap is not None:
+                from winrt.windows.graphics.imaging import (
+                    BitmapPixelFormat,
+                    SoftwareBitmap,
                 )
+                from winrt.windows.storage.streams import Buffer
 
-            readable_bitmap = converted_bitmap or bitmap
-            width = readable_bitmap.pixel_width
-            height = readable_bitmap.pixel_height
-            byte_count = width * height * 4
-            buffer = Buffer(byte_count)
-            readable_bitmap.copy_to_buffer(buffer)
-            bgra = np.frombuffer(memoryview(buffer), dtype=np.uint8, count=byte_count)
-            bgra = bgra.reshape((height, width, 4))
-            return np.ascontiguousarray(bgra[:, ::-1, 2::-1])
+                if bitmap.bitmap_pixel_format != BitmapPixelFormat.BGRA8:
+                    converted_bitmap = SoftwareBitmap.convert(
+                        bitmap,
+                        BitmapPixelFormat.BGRA8,
+                    )
+
+                readable_bitmap = converted_bitmap or bitmap
+                width = readable_bitmap.pixel_width
+                height = readable_bitmap.pixel_height
+                byte_count = width * height * 4
+                buffer = Buffer(byte_count)
+                readable_bitmap.copy_to_buffer(buffer)
+                bgra = np.frombuffer(memoryview(buffer), dtype=np.uint8, count=byte_count)
+                bgra = bgra.reshape((height, width, 4))
+                return np.ascontiguousarray(bgra[:, ::-1, 2::-1])
+
+            buffered_frame = reference.buffer_media_frame
+            if buffered_frame is None:
+                return None
+            encoded_buffer = buffered_frame.buffer
+            encoded = bytes(memoryview(encoded_buffer)[:encoded_buffer.length])
+            image = QImage.fromData(encoded)
+            if image.isNull():
+                raise RuntimeError("共有カメラの圧縮フレームを展開できません。")
+            image = image.convertToFormat(QImage.Format.Format_RGB888)
+            width, height = image.width(), image.height()
+            bytes_per_line = image.bytesPerLine()
+            pixels = np.frombuffer(
+                image.constBits(),
+                dtype=np.uint8,
+                count=bytes_per_line * height,
+            ).reshape((height, bytes_per_line))
+            rgb = pixels[:, : width * 3].reshape((height, width, 3))
+            return np.ascontiguousarray(rgb[:, ::-1])
         finally:
             if converted_bitmap is not None:
                 converted_bitmap.close()
