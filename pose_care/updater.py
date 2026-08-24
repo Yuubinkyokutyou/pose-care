@@ -71,6 +71,15 @@ _TRUSTED_DOWNLOAD_HOSTS = {
     "github-releases.githubusercontent.com",
 }
 
+# Windows PowerShell 5.1 can exit successfully without executing a script when
+# it is created with DETACHED_PROCESS.  CREATE_NO_WINDOW keeps the helper
+# invisible, while CREATE_NEW_PROCESS_GROUP isolates it from parent console
+# control events without preventing normal PowerShell startup.
+_WINDOWS_UPDATE_CREATION_FLAGS = (
+    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+)
+
 
 class UpdateError(RuntimeError):
     """Base class for errors that can be shown in the update UI."""
@@ -534,11 +543,6 @@ class ApplicationUpdater:
             "-ReadyToken",
             ready_token,
         ]
-        creation_flags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        )
         self._report(progress, "launching", 0, "更新後に再起動します")
         try:
             helper_process = self._process_launcher(
@@ -547,7 +551,7 @@ class ApplicationUpdater:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
-                creationflags=creation_flags,
+                creationflags=_WINDOWS_UPDATE_CREATION_FLAGS,
                 cwd=str(workspace),
             )
         except OSError as error:
