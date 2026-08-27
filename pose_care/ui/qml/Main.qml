@@ -690,7 +690,7 @@ ApplicationWindow {
                             Text { text: "PREFERENCES"; color: theme.signal; font.family: theme.dataFont; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.6 }
                             Text { text: "設定"; color: theme.text; font.family: theme.displayFont; font.pixelSize: 27; font.weight: Font.Bold }
                         }
-                        Text { text: controller.saveFeedback; color: controller.saveFeedbackError ? theme.danger : theme.signal; font.family: theme.bodyFont; font.pixelSize: 11 }
+                        Text { objectName: "saveFeedbackText"; text: controller.saveFeedback; color: controller.saveFeedbackError ? theme.danger : theme.signal; font.family: theme.bodyFont; font.pixelSize: 11 }
                         AppButton {
                             theme: appTheme
                             text: "設定を保存"

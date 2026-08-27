@@ -85,6 +85,39 @@ def test_source_startup_command_uses_pose_care_module():
     assert startup.command == r"C:\Python312\pythonw.exe -m pose_care"
 
 
+def test_stale_startup_command_is_not_reported_as_enabled():
+    registry = FakeRegistry()
+    registry.values[VALUE_NAME] = r'"C:\Old Folder\PoseCare.exe"'
+    startup = StartupRegistration(
+        Path(r"C:\Apps\PoseCare\PoseCare.exe"),
+        frozen=True,
+        platform="win32",
+        registry=registry,
+    )
+
+    assert not startup.is_enabled()
+
+    startup.set_enabled(True)
+    assert startup.is_enabled()
+    assert registry.values[VALUE_NAME] == r"C:\Apps\PoseCare\PoseCare.exe"
+
+
+def test_registry_write_error_is_reported():
+    class FailingRegistry(FakeRegistry):
+        def SetValueEx(self, key, name, reserved, value_type, value):
+            raise PermissionError("access denied")
+
+    startup = StartupRegistration(
+        Path(r"C:\Apps\PoseCare\PoseCare.exe"),
+        frozen=True,
+        platform="win32",
+        registry=FailingRegistry(),
+    )
+
+    with pytest.raises(StartupRegistrationError, match="登録できません"):
+        startup.set_enabled(True)
+
+
 def test_startup_registration_is_windows_only():
     startup = StartupRegistration(platform="linux", registry=FakeRegistry())
 

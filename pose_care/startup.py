@@ -46,14 +46,14 @@ class StartupRegistration:
                 0,
                 registry.KEY_QUERY_VALUE,
             ) as key:
-                registry.QueryValueEx(key, VALUE_NAME)
+                value, value_type = registry.QueryValueEx(key, VALUE_NAME)
         except FileNotFoundError:
             return False
         except OSError as error:
             raise StartupRegistrationError(
                 "スタートアップ登録の状態を確認できませんでした"
             ) from error
-        return True
+        return value_type == registry.REG_SZ and value == self.command
 
     def set_enabled(self, enabled: bool) -> None:
         registry = self._windows_registry()
