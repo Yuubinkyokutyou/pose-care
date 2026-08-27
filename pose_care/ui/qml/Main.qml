@@ -659,6 +659,7 @@ ApplicationWindow {
                 property bool stagedNotifications: controller.notificationsEnabled
                 property int stagedCamera: controller.cameraIndex
                 property bool stagedMinimized: controller.startMinimized
+                property bool stagedStartup: controller.startupEnabled
 
                 Connections {
                     target: controller
@@ -669,6 +670,7 @@ ApplicationWindow {
                         settingsPage.stagedNotifications = controller.notificationsEnabled
                         settingsPage.stagedCamera = controller.cameraIndex
                         settingsPage.stagedMinimized = controller.startMinimized
+                        settingsPage.stagedStartup = controller.startupEnabled
                     }
                 }
 
@@ -688,7 +690,7 @@ ApplicationWindow {
                             Text { text: "PREFERENCES"; color: theme.signal; font.family: theme.dataFont; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.6 }
                             Text { text: "設定"; color: theme.text; font.family: theme.displayFont; font.pixelSize: 27; font.weight: Font.Bold }
                         }
-                        Text { text: controller.saveFeedback; color: theme.signal; font.family: theme.bodyFont; font.pixelSize: 11 }
+                        Text { objectName: "saveFeedbackText"; text: controller.saveFeedback; color: controller.saveFeedbackError ? theme.danger : theme.signal; font.family: theme.bodyFont; font.pixelSize: 11 }
                         AppButton {
                             theme: appTheme
                             text: "設定を保存"
@@ -699,7 +701,8 @@ ApplicationWindow {
                                 settingsPage.stagedCooldown,
                                 settingsPage.stagedNotifications,
                                 settingsPage.stagedCamera,
-                                settingsPage.stagedMinimized
+                                settingsPage.stagedMinimized,
+                                settingsPage.stagedStartup
                             )
                         }
                     }
@@ -905,7 +908,7 @@ ApplicationWindow {
 
                             Card {
                                 width: parent.width
-                                height: 160
+                                height: 218
                                 theme: appTheme
 
                                 ColumnLayout {
@@ -919,6 +922,7 @@ ApplicationWindow {
                                         AppSlider { theme: appTheme; Layout.fillWidth: true; from: 0; to: 9; stepSize: 1; value: settingsPage.stagedCamera; onMoved: settingsPage.stagedCamera = Math.round(value) }
                                         Text { Layout.preferredWidth: 54; text: String(settingsPage.stagedCamera); color: theme.text; font.family: theme.dataFont; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
                                     }
+                                    AppToggle { objectName: "startupToggle"; theme: appTheme; label: "Windowsログイン時にPoseCareを起動する"; checked: settingsPage.stagedStartup; onToggled: settingsPage.stagedStartup = checked }
                                     AppToggle { theme: appTheme; label: "次回からタスクトレイで起動する"; checked: settingsPage.stagedMinimized; onToggled: settingsPage.stagedMinimized = checked }
                                 }
                             }

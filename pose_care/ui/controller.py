@@ -33,6 +33,7 @@ from pose_care.models import (
 )
 from pose_care.notifications import WindowsNotifier
 from pose_care.posture import PostureDetector, aggregate_features
+from pose_care.startup import StartupRegistration, StartupRegistrationError
 from pose_care.ui.image_provider import CameraImageProvider
 from pose_care.updater import (
     ApplicationUpdater,
@@ -125,6 +126,7 @@ class PoseCareController(QObject):
         notifier: WindowsNotifier | None = None,
         idle_seconds_provider: Callable[[], float] | None = None,
         updater: ApplicationUpdater | None = None,
+        startup_registration: StartupRegistration | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
@@ -137,6 +139,7 @@ class PoseCareController(QObject):
         self._idle_seconds_provider = idle_seconds_provider or _seconds_since_last_user_input
         self.history = history or PostureHistory(history_path())
         self.updater = updater or ApplicationUpdater()
+        self.startup_registration = startup_registration or StartupRegistration()
         self.camera_worker: CameraWorker | None = None
         self.latest_feature: PoseFeature | None = None
         self.latest_landmarks: list[Any] = []
@@ -167,7 +170,9 @@ class PoseCareController(QObject):
         self._statistics_note = "時間ごとの監視結果"
         self._statistics_updated = "判定結果をこのPC内で集計します"
         self._save_feedback = ""
+        self._save_feedback_error = False
         self._notification_feedback = ""
+        self._startup_enabled = self._read_startup_enabled()
         self._latest_version = ""
         self._update_state = "idle"
         self._update_status = ""
@@ -353,6 +358,11 @@ class PoseCareController(QObject):
 
     startMinimized = Property(bool, _get_start_minimized, notify=settingsChanged)
 
+    def _get_startup_enabled(self) -> bool:
+        return self._startup_enabled
+
+    startupEnabled = Property(bool, _get_startup_enabled, notify=settingsChanged)
+
     def _get_statistics_period(self) -> str:
         return self._statistics_period
 
@@ -387,6 +397,11 @@ class PoseCareController(QObject):
         return self._save_feedback
 
     saveFeedback = Property(str, _get_save_feedback, notify=feedbackChanged)
+
+    def _get_save_feedback_error(self) -> bool:
+        return self._save_feedback_error
+
+    saveFeedbackError = Property(bool, _get_save_feedback_error, notify=feedbackChanged)
 
     def _get_notification_feedback(self) -> str:
         return self._notification_feedback
@@ -524,7 +539,7 @@ class PoseCareController(QObject):
         )
         self.statisticsChanged.emit()
 
-    @Slot(int, float, int, bool, int, bool)
+    @Slot(int, float, int, bool, int, bool, bool)
     def saveSettings(
         self,
         sensitivity: int,
@@ -533,6 +548,7 @@ class PoseCareController(QObject):
         notifications_enabled: bool,
         camera_index: int,
         start_minimized: bool,
+        startup_enabled: bool,
     ) -> None:
         old_camera_index = self.settings.camera_index
         self.settings.sensitivity = max(0, min(100, int(sensitivity)))
@@ -542,8 +558,19 @@ class PoseCareController(QObject):
         self.settings.camera_index = max(0, min(9, int(camera_index)))
         self.settings.start_minimized = bool(start_minimized)
         self.store.save(self.settings)
+        try:
+            self.startup_registration.set_enabled(bool(startup_enabled))
+            self._startup_enabled = bool(startup_enabled)
+            self._save_feedback = "保存しました"
+            self._save_feedback_error = False
+        except StartupRegistrationError as error:
+            logger.warning("Could not update startup registration: %s", error)
+            self._startup_enabled = self._read_startup_enabled(
+                fallback=self._startup_enabled
+            )
+            self._save_feedback = str(error)
+            self._save_feedback_error = True
         self.detector.reset(clear_alerts=True)
-        self._save_feedback = "保存しました"
         self.settingsChanged.emit()
         self.feedbackChanged.emit()
         QTimer.singleShot(2400, self._clear_save_feedback)
@@ -552,7 +579,15 @@ class PoseCareController(QObject):
 
     def _clear_save_feedback(self) -> None:
         self._save_feedback = ""
+        self._save_feedback_error = False
         self.feedbackChanged.emit()
+
+    def _read_startup_enabled(self, fallback: bool = False) -> bool:
+        try:
+            return self.startup_registration.is_enabled()
+        except StartupRegistrationError as error:
+            logger.warning("Could not read startup registration: %s", error)
+            return fallback
 
     @Slot(str, bool)
     def beginRegistration(self, posture_type: str, first_run: bool = False) -> None:

@@ -16,6 +16,7 @@ from pose_care.config import SettingsStore
 from pose_care.history import PostureHistory
 from pose_care.models import AppSettings
 from pose_care.notifications import WindowsNotifier
+from pose_care.startup import StartupRegistration, StartupRegistrationError
 from pose_care.ui.controller import PoseCareController
 from pose_care.ui.image_provider import CameraImageProvider
 from pose_care.ui.style import make_app_icon
@@ -75,6 +76,22 @@ class FakeUpdateController(QObject):
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+class FakeStartupRegistration(StartupRegistration):
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def is_enabled(self) -> bool:
+        return self.enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class FailingStartupRegistration(FakeStartupRegistration):
+    def set_enabled(self, enabled: bool) -> None:
+        raise StartupRegistrationError("スタートアップに登録できませんでした")
 
 
 def test_camera_image_provider_returns_latest_frame():
@@ -361,6 +378,7 @@ def test_main_qml_loads_with_controller(tmp_path):
         provider,
         history=history,
         notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
     )
     engine = QQmlApplicationEngine()
     engine.addImageProvider("camera", provider)
@@ -378,8 +396,63 @@ def test_main_qml_loads_with_controller(tmp_path):
     current_version = window.findChild(QObject, "currentVersionValue")
     assert update_button.property("text") == "更新を確認"
     assert current_version.property("text") == "v0.2.0"
+    startup_toggle = window.findChild(QObject, "startupToggle")
+    assert startup_toggle is not None
+    assert startup_toggle.property("checked") is False
     controller.toggleMonitoring(False)
     assert not controller.monitoring
+    controller.shutdown()
+
+
+def test_save_settings_updates_startup_registration(tmp_path):
+    _application()
+    startup = FakeStartupRegistration()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=startup,
+    )
+
+    controller.saveSettings(55, 4.0, 5, True, 0, False, True)
+
+    assert startup.enabled
+    assert controller.startupEnabled
+    assert controller.saveFeedback == "保存しました"
+    assert not controller.saveFeedbackError
+    controller.shutdown()
+
+
+def test_startup_registration_error_resyncs_settings_and_feedback(tmp_path):
+    application = _application()
+    startup = FailingStartupRegistration()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=startup,
+    )
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("controller", controller)
+    qml_path = Path(__file__).parents[1] / "pose_care" / "ui" / "qml" / "Main.qml"
+    engine.load(qml_path)
+    window = engine.rootObjects()[0]
+
+    controller.saveSettings(55, 4.0, 5, True, 0, False, True)
+    application.processEvents()
+
+    assert not controller.startupEnabled
+    assert controller.saveFeedbackError
+    assert controller.saveFeedback == "スタートアップに登録できませんでした"
+    feedback = window.findChild(QObject, "saveFeedbackText")
+    assert feedback.property("text") == controller.saveFeedback
+    assert feedback.property("color").name() == "#ff737a"
     controller.shutdown()
 
 
