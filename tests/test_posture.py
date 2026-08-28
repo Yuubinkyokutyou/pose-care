@@ -5,11 +5,16 @@ import pytest
 from pose_care.models import PoseFeature, PostureProfile
 from pose_care.posture import (
     PostureDetector,
+    RegistrationStabilityTracker,
     aggregate_features,
     extract_pose_feature,
     feature_similarity,
     similarity_threshold,
 )
+
+
+def make_feature(value: float = 0.0) -> PoseFeature:
+    return PoseFeature((value,) * 14, {})
 
 
 def make_landmarks(scale: float = 1.0, offset=(0.0, 0.0, 0.0)):
@@ -60,6 +65,95 @@ def test_aggregate_uses_median_to_reject_outlier():
         PoseFeature((20.0, 30.0), {}),
     ]
     assert aggregate_features(samples) == pytest.approx((1.1, 2.1))
+
+
+def test_registration_completes_after_three_stable_seconds():
+    tracker = RegistrationStabilityTracker()
+
+    state = None
+    for index in range(32):
+        state = tracker.update(make_feature(0.002 * (index % 2)), now=index * 0.1)
+
+    assert state is not None
+    assert state.complete
+    assert state.phase == "complete"
+    assert state.progress_seconds == pytest.approx(3.0)
+    assert state.sample_count >= 15
+
+
+def test_registration_minor_jitter_keeps_progressing():
+    tracker = RegistrationStabilityTracker()
+    tracker.update(make_feature(), now=0.0)
+
+    state = tracker.update(make_feature(0.005), now=0.1)
+
+    assert state.phase == "holding"
+    assert state.progress_seconds == pytest.approx(0.1)
+
+
+def test_registration_movement_rewinds_then_resumes():
+    tracker = RegistrationStabilityTracker()
+    for index in range(11):
+        tracker.update(make_feature(), now=index * 0.1)
+
+    moving = tracker.update(make_feature(0.05), now=1.1)
+    tracker.update(make_feature(), now=1.2)
+    resumed = tracker.update(make_feature(), now=1.3)
+
+    assert moving.phase == "moving"
+    assert moving.progress_seconds == pytest.approx(0.8)
+    assert resumed.phase == "holding"
+    assert resumed.progress_seconds == pytest.approx(0.7)
+
+
+def test_registration_large_movement_resets_progress_and_samples():
+    tracker = RegistrationStabilityTracker()
+    for index in range(11):
+        tracker.update(make_feature(), now=index * 0.1)
+
+    state = tracker.update(make_feature(0.12), now=1.1)
+
+    assert state.phase == "moving"
+    assert state.progress_seconds == 0.0
+    assert state.sample_count == 0
+
+
+def test_registration_missing_pose_resets_after_grace_period():
+    tracker = RegistrationStabilityTracker()
+    for index in range(11):
+        tracker.update(make_feature(), now=index * 0.1)
+
+    tracker.update(None, now=1.2)
+    state = tracker.update(None, now=1.4)
+
+    assert state.phase == "lost"
+    assert state.progress_seconds == 0.0
+    assert state.sample_count == 0
+
+
+def test_registration_duplicate_frame_does_not_advance():
+    tracker = RegistrationStabilityTracker()
+    feature = make_feature()
+
+    tracker.update(feature, now=0.0)
+    tracker.update(feature, now=0.2)
+    state = tracker.update(feature, now=1.0)
+
+    assert state.progress_seconds == 0.0
+
+
+def test_registration_waits_for_minimum_sample_count():
+    tracker = RegistrationStabilityTracker()
+    tracker.MIN_SAMPLES = 40
+
+    state = None
+    for index in range(17):
+        state = tracker.update(make_feature(), now=index * 0.2)
+
+    assert state is not None
+    assert state.progress_seconds == pytest.approx(3.0)
+    assert not state.complete
+    assert state.phase == "holding"
 
 
 def test_detector_requires_hold_time_and_honors_cooldown():

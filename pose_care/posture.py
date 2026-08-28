@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from pose_care.models import (
     POSTURE_FEATURE_VERSION,
@@ -15,6 +16,145 @@ from pose_care.models import (
 Landmark = tuple[float, float, float, float]
 FEATURE_INDICES = (0, 11, 12)
 MIN_VISIBILITY = 0.42
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationStabilityState:
+    phase: str
+    progress_seconds: float
+    seconds_remaining: float
+    sample_count: int
+    complete: bool = False
+
+
+class RegistrationStabilityTracker:
+    """Track uninterrupted-enough stillness for posture registration."""
+
+    HOLD_SECONDS = 3.0
+    MIN_SAMPLES = 15
+    PREVIOUS_FRAME_THRESHOLD = 0.94
+    ANCHOR_THRESHOLD = 0.86
+    LARGE_MOVEMENT_THRESHOLD = 0.70
+    MISSING_RESET_SECONDS = 0.30
+    REWIND_MULTIPLIER = 2.0
+    MAX_FRAME_INTERVAL_SECONDS = 0.20
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._phase = "ready"
+        self._progress_seconds = 0.0
+        self._samples: list[PoseFeature] = []
+        self._anchor: PoseFeature | None = None
+        self._previous: PoseFeature | None = None
+        self._last_feature: PoseFeature | None = None
+        self._last_update_at: float | None = None
+        self._missing_seconds = 0.0
+
+    @property
+    def samples(self) -> tuple[PoseFeature, ...]:
+        return tuple(self._samples)
+
+    @property
+    def state(self) -> RegistrationStabilityState:
+        return RegistrationStabilityState(
+            phase=self._phase,
+            progress_seconds=self._progress_seconds,
+            seconds_remaining=max(0.0, self.HOLD_SECONDS - self._progress_seconds),
+            sample_count=len(self._samples),
+            complete=self._phase == "complete",
+        )
+
+    def _clear_hold(self, *, phase: str, anchor: PoseFeature | None = None) -> None:
+        self._phase = phase
+        self._progress_seconds = 0.0
+        self._samples.clear()
+        self._anchor = anchor
+        self._previous = anchor
+        self._last_feature = anchor
+
+    def update(
+        self,
+        feature: PoseFeature | None,
+        *,
+        now: float,
+    ) -> RegistrationStabilityState:
+        if self._phase == "complete":
+            return self.state
+
+        if self._last_update_at is None:
+            elapsed = 0.0
+        else:
+            elapsed = max(
+                0.0,
+                min(now - self._last_update_at, self.MAX_FRAME_INTERVAL_SECONDS),
+            )
+        self._last_update_at = now
+
+        # Re-emitting the exact same pose object must not turn a stalled camera
+        # into credited hold time.
+        if feature is not None and feature is self._last_feature:
+            return self.state
+
+        if feature is None:
+            self._phase = "lost"
+            self._missing_seconds += elapsed
+            self._progress_seconds = max(
+                0.0,
+                self._progress_seconds - (elapsed * self.REWIND_MULTIPLIER),
+            )
+            if self._progress_seconds == 0.0:
+                self._samples.clear()
+            if self._missing_seconds >= self.MISSING_RESET_SECONDS:
+                self._clear_hold(phase="lost")
+            return self.state
+
+        self._missing_seconds = 0.0
+        if self._anchor is None or self._previous is None:
+            self._phase = "holding"
+            self._anchor = feature
+            self._previous = feature
+            self._last_feature = feature
+            self._samples.append(feature)
+            return self.state
+
+        previous_similarity = feature_similarity(feature.vector, self._previous.vector)
+        anchor_similarity = feature_similarity(feature.vector, self._anchor.vector)
+        self._last_feature = feature
+        self._previous = feature
+
+        if anchor_similarity < self.LARGE_MOVEMENT_THRESHOLD:
+            self._clear_hold(phase="moving", anchor=feature)
+            return self.state
+
+        stable = (
+            previous_similarity >= self.PREVIOUS_FRAME_THRESHOLD
+            and anchor_similarity >= self.ANCHOR_THRESHOLD
+        )
+        if stable:
+            self._phase = "holding"
+            self._progress_seconds = min(
+                self.HOLD_SECONDS,
+                self._progress_seconds + elapsed,
+            )
+            self._samples.append(feature)
+        else:
+            self._phase = "moving"
+            self._progress_seconds = max(
+                0.0,
+                self._progress_seconds - (elapsed * self.REWIND_MULTIPLIER),
+            )
+            if self._progress_seconds == 0.0:
+                self._samples.clear()
+                self._anchor = feature
+
+        if (
+            self._progress_seconds >= self.HOLD_SECONDS
+            and len(self._samples) >= self.MIN_SAMPLES
+        ):
+            self._phase = "complete"
+        return self.state
 
 
 def _midpoint(left: Landmark, right: Landmark) -> tuple[float, float, float]:

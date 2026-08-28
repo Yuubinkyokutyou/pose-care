@@ -11,7 +11,6 @@ from typing import Any
 from PySide6.QtCore import (
     Property,
     QCoreApplication,
-    QElapsedTimer,
     QObject,
     QTimer,
     Qt,
@@ -32,7 +31,12 @@ from pose_care.models import (
     PostureProfile,
 )
 from pose_care.notifications import WindowsNotifier
-from pose_care.posture import PostureDetector, aggregate_features
+from pose_care.posture import (
+    PostureDetector,
+    RegistrationStabilityState,
+    RegistrationStabilityTracker,
+    aggregate_features,
+)
 from pose_care.startup import StartupRegistration, StartupRegistrationError
 from pose_care.ui.image_provider import CameraImageProvider
 from pose_care.updater import (
@@ -186,14 +190,11 @@ class PoseCareController(QObject):
         self._registration_first_run = False
         self._registration_capturing = False
         self._registration_progress = 0
+        self._registration_phase = "ready"
+        self._registration_seconds_remaining = RegistrationStabilityTracker.HOLD_SECONDS
         self._registration_status = "準備できたら登録を開始してください"
         self._registration_name = ""
-        self._registration_samples: list[PoseFeature] = []
-        self._registration_last_sample: PoseFeature | None = None
-        self._registration_elapsed = QElapsedTimer()
-        self._registration_timer = QTimer(self)
-        self._registration_timer.setInterval(70)
-        self._registration_timer.timeout.connect(self._registration_tick)
+        self._registration_tracker = RegistrationStabilityTracker()
 
         self._updateTaskFinished.connect(self._on_update_task_finished)
         self._updateTaskFailed.connect(self._on_update_task_failed)
@@ -458,6 +459,20 @@ class PoseCareController(QObject):
 
     registrationProgress = Property(int, _get_registration_progress, notify=registrationChanged)
 
+    def _get_registration_phase(self) -> str:
+        return self._registration_phase
+
+    registrationPhase = Property(str, _get_registration_phase, notify=registrationChanged)
+
+    def _get_registration_seconds_remaining(self) -> float:
+        return self._registration_seconds_remaining
+
+    registrationSecondsRemaining = Property(
+        float,
+        _get_registration_seconds_remaining,
+        notify=registrationChanged,
+    )
+
     def _get_registration_status(self) -> str:
         return self._registration_status
 
@@ -596,8 +611,10 @@ class PoseCareController(QObject):
         self._registration_open = True
         self._registration_capturing = False
         self._registration_progress = 0
+        self._registration_phase = "ready"
+        self._registration_seconds_remaining = RegistrationStabilityTracker.HOLD_SECONDS
         self._registration_status = "準備できたら登録を開始してください"
-        self._registration_samples.clear()
+        self._registration_tracker.reset()
         self.registrationChanged.emit()
 
     @Slot(str)
@@ -608,62 +625,83 @@ class PoseCareController(QObject):
             self.registrationChanged.emit()
             return
         if self.latest_feature is None:
+            self._registration_phase = "lost"
+            self._registration_progress = 0
+            self._registration_seconds_remaining = RegistrationStabilityTracker.HOLD_SECONDS
             self._registration_status = "姿勢を認識できません。頭と両肩をカメラに入れてください"
             self.registrationChanged.emit()
             return
         self._registration_name = normalized_name[:30]
-        self._registration_samples.clear()
-        self._registration_last_sample = None
+        self._registration_tracker.reset()
         self._registration_capturing = True
         self._registration_progress = 0
-        self._registration_status = "その姿勢のまま、動かずに保ってください"
-        self._registration_elapsed.start()
-        self._registration_timer.start()
+        state = self._registration_tracker.update(
+            self.latest_feature,
+            now=time.monotonic(),
+        )
+        self._set_registration_state(state)
         self.registrationChanged.emit()
 
     @Slot()
     def cancelRegistration(self) -> None:
-        self._registration_timer.stop()
         self._registration_open = False
         self._registration_capturing = False
+        self._registration_tracker.reset()
         self.registrationChanged.emit()
 
-    def _registration_tick(self) -> None:
-        elapsed_ms = self._registration_elapsed.elapsed()
-        self._registration_progress = min(100, int(elapsed_ms / 30))
-        feature = self.latest_feature
-        if feature is not None and feature is not self._registration_last_sample:
-            self._registration_samples.append(feature)
-            self._registration_last_sample = feature
-        if elapsed_ms < 3000:
-            self.registrationChanged.emit()
+    def _set_registration_state(self, state: RegistrationStabilityState) -> None:
+        self._registration_phase = state.phase
+        self._registration_progress = min(
+            100,
+            int(
+                round(
+                    state.progress_seconds
+                    / RegistrationStabilityTracker.HOLD_SECONDS
+                    * 100
+                )
+            ),
+        )
+        self._registration_seconds_remaining = state.seconds_remaining
+        self._registration_status = {
+            "ready": "姿勢を整えたら、保持を始めてください",
+            "holding": "そのままキープ",
+            "moving": "動きを検知。止まると再開します",
+            "lost": "頭と両肩をカメラに入れてください",
+            "complete": "3秒間キープできました",
+        }.get(state.phase, "姿勢を整えてください")
+
+    def _update_registration(self, feature: PoseFeature | None, now: float) -> None:
+        if not self._registration_capturing:
             return
-        self._registration_timer.stop()
-        self._registration_capturing = False
-        if len(self._registration_samples) < 15:
-            self._registration_status = (
-                "十分に認識できませんでした。姿勢と明るさを整えて再試行してください"
-            )
-            self._registration_progress = 0
+        state = self._registration_tracker.update(feature, now=now)
+        self._set_registration_state(state)
+        if state.complete:
+            self._complete_registration()
+        else:
             self.registrationChanged.emit()
-            return
-        aggregate = aggregate_features(self._registration_samples)
+
+    def _complete_registration(self) -> None:
+        samples = self._registration_tracker.samples
+        aggregate = aggregate_features(samples)
         profile = PostureProfile.create(
             self._registration_name,
             list(aggregate),
-            len(self._registration_samples),
+            len(samples),
             posture_type=self._registration_type,
         )
         self.settings.profiles.append(profile)
         self.settings.first_run_complete = True
         self.store.save(self.settings)
         self.detector.reset(clear_alerts=True)
+        self._registration_capturing = False
+        self._registration_phase = "complete"
+        self._registration_seconds_remaining = 0.0
         self._registration_status = f"「{profile.name}」を登録しました"
         self._registration_progress = 100
         self.profilesChanged.emit()
         self.settingsChanged.emit()
         self.registrationChanged.emit()
-        QTimer.singleShot(450, self._finish_registration)
+        QTimer.singleShot(850, self._finish_registration)
 
     def _finish_registration(self) -> None:
         self._registration_open = False
@@ -960,7 +998,6 @@ class PoseCareController(QObject):
     def shutdown(self) -> None:
         self._update_shutdown.set()
         self._discard_prepared_update()
-        self._registration_timer.stop()
         self._statistics_timer.stop()
         self._camera_activity_timer.stop()
         self._cancel_camera_recovery()
@@ -1084,6 +1121,7 @@ class PoseCareController(QObject):
             return
         self.latest_feature = feature
         self.latest_landmarks = landmarks
+        self._update_registration(feature, time.monotonic())
         if landmarks:
             self._last_person_seen_at = time.monotonic()
         if feature is None:

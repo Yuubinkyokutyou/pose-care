@@ -941,8 +941,13 @@ ApplicationWindow {
 
     Popup {
         id: registrationPopup
-        width: Math.min(560, root.width - 70)
-        height: 515
+        objectName: "registrationPopup"
+        property color phaseColor: controller.registrationPhase === "moving" ? theme.amber
+                                   : controller.registrationPhase === "lost" ? theme.danger
+                                   : controller.registrationPhase === "ready" ? theme.blue
+                                   : theme.signal
+        width: Math.min(760, root.width - 48)
+        height: Math.min(600, root.height - 36)
         x: (root.width - width) / 2
         y: (root.height - height) / 2
         modal: true
@@ -952,7 +957,7 @@ ApplicationWindow {
         padding: 0
 
         background: Rectangle {
-            color: theme.surface
+            color: theme.surfaceHigh
             radius: 20
             border.color: theme.line
             border.width: 1
@@ -966,97 +971,241 @@ ApplicationWindow {
 
         contentItem: ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 28
-            spacing: 13
+            anchors.margins: 24
+            spacing: 16
 
-            Text {
-                text: controller.registrationFirstRun ? "FIRST SETUP" : "POSTURE PROFILE"
-                color: theme.signal
-                font.family: theme.dataFont
-                font.pixelSize: 9
-                font.weight: Font.Bold
-                font.letterSpacing: 1.5
-            }
-            Text {
-                Layout.fillWidth: true
-                text: controller.registrationType === "normal"
-                      ? "基準にする正常姿勢を覚えさせる"
-                      : "よくしてしまう姿勢を覚えさせる"
-                color: theme.text
-                font.family: theme.displayFont
-                font.pixelSize: 23
-                font.weight: Font.Bold
-                wrapMode: Text.WordWrap
-            }
-            Text {
-                Layout.fillWidth: true
-                text: controller.registrationType === "normal"
-                      ? "頭・両肩・胸元をカメラに入れ、通知から除外したい正常姿勢を3秒間保ちます。普段のカメラ位置・椅子の高さで登録すると安定します。"
-                      : "頭・両肩・胸元をカメラに入れ、通知してほしい悪い姿勢を3秒間保ちます。普段のカメラ位置・椅子の高さで登録すると安定します。"
-                color: theme.muted
-                font.family: theme.bodyFont
-                font.pixelSize: 12
-                lineHeight: 1.35
-                wrapMode: Text.WordWrap
-            }
-
-            Text { text: "姿勢の名前"; color: theme.text; font.family: theme.bodyFont; font.pixelSize: 12 }
-            TextField {
-                id: profileName
-                Layout.fillWidth: true
-                Layout.preferredHeight: 43
-                enabled: !controller.registrationCapturing
-                maximumLength: 30
-                color: theme.text
-                selectionColor: theme.signal
-                selectedTextColor: theme.inkOnAccent
-                font.family: theme.bodyFont
-                font.pixelSize: 13
-                background: Rectangle { radius: 10; color: theme.surfaceInset; border.color: profileName.activeFocus ? theme.signal : theme.line }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 54
-                radius: 12
-                color: theme.surfaceInset
-                border.color: theme.lineSoft
-                Text {
-                    anchors.centerIn: parent
-                    text: (controller.registrationType === "normal" ? "正常姿勢をとる" : "悪い姿勢をとる") + "   →   3秒保つ   →   登録完了"
-                    color: theme.text
-                    font.family: theme.bodyFont
-                    font.pixelSize: 11
-                }
-            }
-
-            Item { Layout.fillHeight: true }
-            Text {
-                Layout.fillWidth: true
-                text: controller.registrationStatus
-                color: controller.registrationProgress === 100 ? theme.signal : theme.muted
-                font.family: theme.bodyFont
-                font.pixelSize: 11
-                wrapMode: Text.WordWrap
-            }
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 7
-                radius: 4
-                color: theme.control
-                Rectangle {
-                    width: parent.width * controller.registrationProgress / 100
-                    height: parent.height
-                    radius: 4
-                    color: theme.signal
-                    Behavior on width { NumberAnimation { duration: 80 } }
-                }
-            }
             RowLayout {
                 Layout.fillWidth: true
-                Item { Layout.fillWidth: true }
-                AppButton { theme: appTheme; text: "あとで"; enabled: !controller.registrationCapturing; onClicked: controller.cancelRegistration() }
-                AppButton { theme: appTheme; text: controller.registrationCapturing ? "記録中…" : "3秒間登録する"; accent: true; enabled: !controller.registrationCapturing; onClicked: controller.startRegistration(profileName.text) }
+                spacing: 12
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 3
+                    Text {
+                        text: controller.registrationFirstRun ? "FIRST SETUP / STILLNESS CHECK" : "POSTURE PROFILE / STILLNESS CHECK"
+                        color: theme.signal
+                        font.family: theme.dataFont
+                        font.pixelSize: 9
+                        font.weight: Font.Bold
+                        font.letterSpacing: 1.4
+                    }
+                    Text {
+                        text: controller.registrationType === "normal"
+                              ? "正常姿勢を3秒間キープ"
+                              : "登録する姿勢を3秒間キープ"
+                        color: theme.text
+                        font.family: theme.displayFont
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 88
+                    Layout.preferredHeight: 28
+                    radius: 14
+                    color: Qt.alpha(registrationPopup.phaseColor, 0.13)
+                    border.color: Qt.alpha(registrationPopup.phaseColor, 0.55)
+                    Text {
+                        anchors.centerIn: parent
+                        text: controller.registrationPhase === "complete" ? "CAPTURED"
+                              : controller.registrationCapturing ? "MEASURING" : "READY"
+                        color: registrationPopup.phaseColor
+                        font.family: theme.dataFont
+                        font.pixelSize: 9
+                        font.weight: Font.Bold
+                        font.letterSpacing: 0.8
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 18
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumWidth: 360
+                    radius: 16
+                    color: "#050B12"
+                    border.color: controller.registrationCapturing
+                                  ? Qt.alpha(registrationPopup.phaseColor, 0.72)
+                                  : theme.lineSoft
+                    border.width: 1
+                    clip: true
+
+                    Image {
+                        id: registrationCameraImage
+                        objectName: "registrationCameraPreview"
+                        anchors.fill: parent
+                        anchors.margins: 5
+                        source: controller.cameraFrameSource
+                        cache: false
+                        asynchronous: false
+                        fillMode: Image.PreserveAspectCrop
+                        smooth: true
+                    }
+
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "transparent"
+                        border.color: Qt.alpha(registrationPopup.phaseColor, 0.16)
+                        border.width: 10
+                    }
+
+                    Item {
+                        anchors.centerIn: parent
+                        width: parent.width * 0.52
+                        height: parent.height * 0.62
+                        opacity: controller.registrationCapturing ? 0.85 : 0.48
+
+                        Rectangle { anchors.left: parent.left; anchors.top: parent.top; width: 30; height: 2; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.left: parent.left; anchors.top: parent.top; width: 2; height: 30; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.right: parent.right; anchors.top: parent.top; width: 30; height: 2; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.right: parent.right; anchors.top: parent.top; width: 2; height: 30; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.left: parent.left; anchors.bottom: parent.bottom; width: 30; height: 2; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.left: parent.left; anchors.bottom: parent.bottom; width: 2; height: 30; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.right: parent.right; anchors.bottom: parent.bottom; width: 30; height: 2; color: registrationPopup.phaseColor }
+                        Rectangle { anchors.right: parent.right; anchors.bottom: parent.bottom; width: 2; height: 30; color: registrationPopup.phaseColor }
+                    }
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 14
+                        width: cameraHint.implicitWidth + 22
+                        height: 29
+                        radius: 14
+                        color: Qt.rgba(0.02, 0.05, 0.08, 0.84)
+                        border.color: Qt.alpha(registrationPopup.phaseColor, 0.45)
+                        Text {
+                            id: cameraHint
+                            anchors.centerIn: parent
+                            text: controller.registrationPhase === "lost"
+                                  ? "上半身を枠内へ"
+                                  : "頭と両肩を枠内へ"
+                            color: registrationPopup.phaseColor
+                            font.family: theme.bodyFont
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.preferredWidth: 300
+                    Layout.fillHeight: true
+                    spacing: 9
+
+                    Text {
+                        text: controller.registrationType === "normal"
+                              ? "通知から除外したい姿勢をとり、動かずに保ちます。"
+                              : "通知してほしい姿勢をとり、動かずに保ちます。"
+                        Layout.fillWidth: true
+                        color: theme.muted
+                        font.family: theme.bodyFont
+                        font.pixelSize: 11
+                        lineHeight: 1.3
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Text { text: "姿勢の名前"; color: theme.text; font.family: theme.bodyFont; font.pixelSize: 11 }
+                    TextField {
+                        id: profileName
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 41
+                        enabled: !controller.registrationCapturing
+                        maximumLength: 30
+                        color: theme.text
+                        selectionColor: theme.signal
+                        selectedTextColor: theme.inkOnAccent
+                        font.family: theme.bodyFont
+                        font.pixelSize: 13
+                        background: Rectangle {
+                            radius: 10
+                            color: theme.surfaceInset
+                            border.color: profileName.activeFocus ? theme.signal : theme.line
+                        }
+                    }
+
+                    Item { Layout.fillHeight: true }
+
+                    Text {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        text: controller.registrationPhase === "complete"
+                              ? "✓"
+                              : "あと " + controller.registrationSecondsRemaining.toFixed(1) + " 秒"
+                        color: registrationPopup.phaseColor
+                        font.family: controller.registrationPhase === "complete" ? theme.displayFont : theme.dataFont
+                        font.pixelSize: controller.registrationPhase === "complete" ? 48 : 31
+                        font.weight: Font.Bold
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Repeater {
+                            model: 3
+                            Rectangle {
+                                required property int index
+                                property real fillRatio: Math.max(
+                                    0,
+                                    Math.min(1, (controller.registrationProgress * 3 / 100) - index)
+                                )
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 10
+                                radius: 5
+                                color: theme.control
+                                Rectangle {
+                                    width: parent.width * parent.fillRatio
+                                    height: parent.height
+                                    radius: parent.radius
+                                    color: registrationPopup.phaseColor
+                                    Behavior on width { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        objectName: "registrationStatusText"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 34
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        text: controller.registrationStatus
+                        color: registrationPopup.phaseColor
+                        font.family: theme.bodyFont
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Item { Layout.fillHeight: true }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        AppButton {
+                            theme: appTheme
+                            text: "キャンセル"
+                            enabled: controller.registrationPhase !== "complete"
+                            onClicked: controller.cancelRegistration()
+                        }
+                        Item { Layout.fillWidth: true }
+                        AppButton {
+                            objectName: "registrationStartButton"
+                            theme: appTheme
+                            text: controller.registrationCapturing ? "計測中…" : "保持を始める"
+                            accent: true
+                            enabled: !controller.registrationCapturing && controller.registrationPhase !== "complete"
+                            onClicked: controller.startRegistration(profileName.text)
+                        }
+                    }
+                }
             }
         }
     }

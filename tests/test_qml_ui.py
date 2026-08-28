@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from pose_care.config import SettingsStore
 from pose_care.history import PostureHistory
-from pose_care.models import AppSettings
+from pose_care.models import AppSettings, PoseFeature
 from pose_care.notifications import WindowsNotifier
 from pose_care.startup import StartupRegistration, StartupRegistrationError
 from pose_care.ui.controller import PoseCareController
@@ -401,6 +401,79 @@ def test_main_qml_loads_with_controller(tmp_path):
     assert startup_toggle.property("checked") is False
     controller.toggleMonitoring(False)
     assert not controller.monitoring
+    controller.shutdown()
+
+
+def test_registration_only_saves_after_three_stable_seconds(tmp_path, monkeypatch):
+    _application()
+    monkeypatch.setattr("pose_care.ui.controller.time.monotonic", lambda: 0.0)
+    store = SettingsStore(tmp_path / "settings.json")
+    controller = PoseCareController(
+        store,
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+    controller.latest_feature = PoseFeature((0.0,) * 14, {})
+
+    controller.beginRegistration("bad")
+    controller.startRegistration("猫背")
+    for index in range(1, 32):
+        controller._update_registration(
+            PoseFeature((0.002 * (index % 2),) * 14, {}),
+            now=index * 0.1,
+        )
+
+    assert not controller.registrationCapturing
+    assert controller.registrationPhase == "complete"
+    assert controller.registrationProgress == 100
+    assert controller.registrationSecondsRemaining == 0.0
+    assert len(controller.settings.profiles) == 1
+    assert controller.settings.profiles[0].name == "猫背"
+    assert controller.settings.profiles[0].sample_count >= 15
+    assert len(store.load().profiles) == 1
+    controller.shutdown()
+
+
+def test_registration_popup_exposes_live_stillness_ui_at_minimum_size(tmp_path):
+    application = _application()
+    provider = CameraImageProvider()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        provider,
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("camera", provider)
+    engine.rootContext().setContextProperty("controller", controller)
+    qml_path = Path(__file__).parents[1] / "pose_care" / "ui" / "qml" / "Main.qml"
+    engine.load(qml_path)
+    window = engine.rootObjects()[0]
+    window.setWidth(960)
+    window.setHeight(660)
+
+    controller.beginRegistration("bad")
+    application.processEvents()
+
+    popup = window.findChild(QObject, "registrationPopup")
+    preview = window.findChild(QObject, "registrationCameraPreview")
+    status = window.findChild(QObject, "registrationStatusText")
+    start_button = window.findChild(QObject, "registrationStartButton")
+    assert popup is not None
+    assert popup.property("visible") is True
+    assert popup.property("width") <= 912
+    assert popup.property("height") <= 624
+    assert preview is not None
+    assert status.property("text") == "準備できたら登録を開始してください"
+    assert start_button.property("text") == "保持を始める"
+    assert start_button.property("enabled") is True
     controller.shutdown()
 
 
