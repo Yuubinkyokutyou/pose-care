@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -11,7 +12,9 @@ from pose_care.camera import (
     _camera_open_error_message,
     _camera_open_error_type,
     _frame_stream_stalled,
+    _select_shared_camera_group,
     _shared_camera_groups,
+    _wait_for_camera_operation,
 )
 from pose_care.camera import CameraConfigurationError, CameraConnectionError
 from pose_care.camera import SharedCameraCapture
@@ -54,7 +57,7 @@ def test_shared_camera_groups_deduplicate_and_prefer_companion_sensors():
         (-2_147_024_891, CameraConfigurationError),  # 0x80070005 access denied
         (5, CameraConfigurationError),
         (-1_072_844_856, CameraConfigurationError),  # 0xC00DAFC8 unsupported
-        (-12345, CameraConnectionError),
+        (-12345, CameraConfigurationError),
     ],
 )
 def test_camera_open_error_type_retries_device_failures(
@@ -69,6 +72,39 @@ def test_camera_open_error_explains_sleep_resume_failure():
     error = OSError(22, "incorrect function", None, -2_147_024_895)
 
     assert "スリープ復帰後" in _camera_open_error_message(error)
+
+
+def test_empty_camera_enumeration_is_retryable():
+    with pytest.raises(CameraConnectionError, match="再検出"):
+        _select_shared_camera_group([], 0, object())
+
+
+def test_missing_configured_camera_is_retryable_during_reenumeration():
+    color = object()
+    available = [_group("first", _source("rgb-a", color))]
+
+    with pytest.raises(CameraConnectionError, match="共有カメラ 1"):
+        _select_shared_camera_group(available, 1, color)
+
+
+def test_camera_operation_timeout_is_retryable():
+    async def never_finishes():
+        await asyncio.sleep(60)
+
+    with pytest.raises(CameraConnectionError, match="タイムアウト"):
+        asyncio.run(
+            _wait_for_camera_operation(
+                never_finishes(),
+                "カメラの初期化",
+                0.001,
+            )
+        )
+
+
+def test_retryable_camera_error_stays_retryable_through_open_mapping():
+    error = CameraConnectionError("カメラの検出がタイムアウトしました")
+
+    assert _camera_open_error_type(error) is CameraConnectionError
 
 
 def test_frame_stream_stall_timeout_detects_sleep_gap():

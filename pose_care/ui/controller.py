@@ -152,6 +152,7 @@ class PoseCareController(QObject):
         self._camera_suspended_for_idle = False
         self._camera_recovery_active = False
         self._camera_recovery_attempts = 0
+        self._camera_start_pending = False
         self._last_person_seen_at = time.monotonic()
         self._idle_camera_timeout_seconds = CAMERA_IDLE_TIMEOUT_SECONDS
         self._quitting = False
@@ -1001,7 +1002,7 @@ class PoseCareController(QObject):
         self._statistics_timer.stop()
         self._camera_activity_timer.stop()
         self._cancel_camera_recovery()
-        self._stop_camera()
+        self._stop_camera(wait=True)
         if not self._history_closed:
             self.history.close()
             self._history_closed = True
@@ -1017,10 +1018,17 @@ class PoseCareController(QObject):
         worker.pose_ready.connect(self._on_pose)
         worker.status_changed.connect(self._on_camera_status)
         worker.model_progress.connect(self._on_model_progress)
-        worker.camera_error.connect(self._on_camera_error)
+        worker.camera_error.connect(
+            lambda message, retryable: self._on_camera_worker_error(
+                worker,
+                message,
+                retryable,
+            )
+        )
         worker.fps_changed.connect(self._on_fps)
         worker.finished.connect(lambda: self._on_camera_worker_finished(worker))
         self.camera_worker = worker
+        self._camera_start_pending = False
         worker.start()
 
     def _restart_camera(self) -> None:
@@ -1029,23 +1037,58 @@ class PoseCareController(QObject):
         self._last_person_seen_at = time.monotonic()
         self._camera_status = "カメラを切り替えています"
         self.uiChanged.emit()
-        self._stop_camera()
-        self._start_camera()
+        self._replace_camera_worker()
 
-    def _stop_camera(self) -> None:
+    def _replace_camera_worker(self) -> None:
+        self._camera_start_pending = True
+        if self.camera_worker is None:
+            self._start_camera()
+            return
+        self.camera_worker.request_stop()
+
+    def _stop_camera(self, *, wait: bool = False) -> None:
+        self._camera_start_pending = False
         worker = self.camera_worker
         if worker is None:
             return
-        self.camera_worker = None
         worker.request_stop()
+        if not wait:
+            return
         if not worker.wait(25_000):
-            logger.warning("Camera worker did not stop within 25 seconds")
-        worker.deleteLater()
-
-    def _on_camera_worker_finished(self, worker: CameraWorker) -> None:
+            logger.warning(
+                "Camera worker did not stop within 25 seconds; waiting for safe shutdown"
+            )
+            worker.wait()
         if self.camera_worker is worker:
             self.camera_worker = None
         worker.deleteLater()
+
+    def _on_camera_worker_finished(self, worker: CameraWorker) -> None:
+        if self.camera_worker is not worker:
+            worker.deleteLater()
+            return
+        self.camera_worker = None
+        worker.deleteLater()
+        if (
+            self._camera_start_pending
+            and not self._camera_suspended_for_idle
+            and not self._quitting
+        ):
+            self._start_camera()
+
+    def _on_camera_worker_error(
+        self,
+        worker: CameraWorker,
+        message: str,
+        retryable: bool,
+    ) -> None:
+        if self.camera_worker is not None and self.camera_worker is not worker:
+            logger.debug("Ignoring an error from a stale camera worker: %s", message)
+            return
+        if self.camera_worker is worker and self._camera_start_pending:
+            logger.debug("Ignoring an error from a camera worker being replaced: %s", message)
+            return
+        self._on_camera_error(message, retryable)
 
     def _check_camera_activity(self) -> None:
         if self._quitting:
@@ -1102,14 +1145,11 @@ class PoseCareController(QObject):
             or self._quitting
         ):
             return
-        self._stop_camera()
-        if self._quitting:
-            return
         self._camera_recovery_attempts += 1
         self._camera_status = "カメラを再開しています"
         self._camera_error_text = ""
         self._set_detection_state(DetectionState(kind="starting"))
-        self._start_camera()
+        self._replace_camera_worker()
 
     def _cancel_camera_recovery(self) -> None:
         self._camera_retry_timer.stop()

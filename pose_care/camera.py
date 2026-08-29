@@ -23,6 +23,8 @@ MODEL_URL = (
 logger = logging.getLogger(__name__)
 
 CAMERA_FRAME_STALL_TIMEOUT_SECONDS = 10.0
+CAMERA_OPERATION_TIMEOUT_SECONDS = 15.0
+CAMERA_STOP_TIMEOUT_SECONDS = 5.0
 
 UPPER_BODY_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
@@ -61,6 +63,10 @@ def _normalized_error_code(error: Exception) -> int | None:
 
 
 def _camera_open_error_type(error: Exception) -> type[RuntimeError]:
+    if isinstance(error, CameraConnectionError):
+        return CameraConnectionError
+    if isinstance(error, CameraConfigurationError):
+        return CameraConfigurationError
     error_code = _normalized_error_code(error)
     if error_code in (
         _HRESULT_CAMERA_SHARING_VIOLATION,
@@ -74,11 +80,6 @@ def _camera_open_error_type(error: Exception) -> type[RuntimeError]:
         _WINERROR_ACCESS_DENIED,
     ):
         return CameraConfigurationError
-    # WinRT and camera drivers can surface device-loss failures through generic
-    # HRESULT values after sleep/resume. Retrying an unknown camera-open OS
-    # error is safe; only known permission/capability failures are permanent.
-    if error_code is not None:
-        return CameraConnectionError
     return CameraConfigurationError
 
 
@@ -100,6 +101,19 @@ def _camera_open_error_message(error: Exception) -> str:
 
 def _frame_stream_stalled(last_frame_at: float, now: float) -> bool:
     return now - last_frame_at >= CAMERA_FRAME_STALL_TIMEOUT_SECONDS
+
+
+async def _wait_for_camera_operation(
+    operation: Any,
+    description: str,
+    timeout_seconds: float = CAMERA_OPERATION_TIMEOUT_SECONDS,
+) -> Any:
+    try:
+        return await asyncio.wait_for(operation, timeout_seconds)
+    except TimeoutError as error:
+        raise CameraConnectionError(
+            f"{description}がタイムアウトしました。再接続します。"
+        ) from error
 
 
 def _shared_camera_groups(groups: Sequence[Any], color_kind: Any) -> list[Any]:
@@ -126,6 +140,24 @@ def _shared_camera_groups(groups: Sequence[Any], color_kind: Any) -> list[Any]:
         seen_group_ids.add(group.id)
         result.append(group)
     return result
+
+
+def _select_shared_camera_group(
+    groups: Sequence[Any],
+    camera_index: int,
+    color_kind: Any,
+) -> Any:
+    shared_groups = _shared_camera_groups(groups, color_kind)
+    if not shared_groups:
+        raise CameraConnectionError(
+            "Windowsがカメラを再検出しています。再接続します。"
+        )
+    if camera_index >= len(shared_groups):
+        raise CameraConnectionError(
+            f"共有カメラ {camera_index} の再検出を待っています。"
+            "接続を確認しながら再試行します。"
+        )
+    return shared_groups[camera_index]
 
 
 class SharedCameraCapture:
@@ -156,18 +188,23 @@ class SharedCameraCapture:
             MediaFrameSourceGroup,
             MediaFrameSourceKind,
         )
-        groups = _shared_camera_groups(
-            await MediaFrameSourceGroup.find_all_async(),
+        try:
+            available_groups = await _wait_for_camera_operation(
+                MediaFrameSourceGroup.find_all_async(),
+                "カメラの検出",
+            )
+        except Exception as error:
+            raise _camera_open_error_type(error)(
+                _camera_open_error_message(error)
+            ) from error
+        source_group = _select_shared_camera_group(
+            available_groups,
+            self.camera_index,
             MediaFrameSourceKind.COLOR,
         )
-        if self.camera_index >= len(groups):
-            raise CameraConfigurationError(
-                f"共有カメラ {self.camera_index} が見つかりません。"
-                "設定でカメラ番号を変更してください。"
-            )
 
         settings = MediaCaptureInitializationSettings()
-        settings.source_group = groups[self.camera_index]
+        settings.source_group = source_group
         settings.sharing_mode = MediaCaptureSharingMode.SHARED_READ_ONLY
         settings.memory_preference = MediaCaptureMemoryPreference.CPU
         settings.streaming_capture_mode = StreamingCaptureMode.VIDEO
@@ -176,15 +213,18 @@ class SharedCameraCapture:
         reader = None
         frame_arrived_token = None
         try:
-            await capture.initialize_with_settings_async(settings)
+            await _wait_for_camera_operation(
+                capture.initialize_with_settings_async(settings),
+                "カメラの初期化",
+            )
             sources = [
                 source
                 for source in capture.frame_sources.values()
                 if source.info.source_kind == MediaFrameSourceKind.COLOR
             ]
             if not sources:
-                raise CameraConfigurationError(
-                    "共有カメラにRGB映像ソースがありません。"
+                raise CameraConnectionError(
+                    "カメラのRGB映像ソースを再検出しています。再接続します。"
                 )
             source = min(
                 sources,
@@ -193,10 +233,16 @@ class SharedCameraCapture:
                     item.info.media_stream_type != MediaStreamType.VIDEO_RECORD,
                 ),
             )
-            reader = await capture.create_frame_reader_async(source)
+            reader = await _wait_for_camera_operation(
+                capture.create_frame_reader_async(source),
+                "映像リーダーの作成",
+            )
             reader.acquisition_mode = MediaFrameReaderAcquisitionMode.REALTIME
             frame_arrived_token = reader.add_frame_arrived(self._on_frame_arrived)
-            status = await reader.start_async()
+            status = await _wait_for_camera_operation(
+                reader.start_async(),
+                "カメラ映像の開始",
+            )
             if status != MediaFrameReaderStartStatus.SUCCESS:
                 error_type = (
                     CameraConnectionError
@@ -341,7 +387,11 @@ class SharedCameraCapture:
                 except Exception as error:
                     logger.warning("Failed to detach camera frame callback: %s", error)
             try:
-                await reader.stop_async()
+                await _wait_for_camera_operation(
+                    reader.stop_async(),
+                    "カメラ映像の停止",
+                    CAMERA_STOP_TIMEOUT_SECONDS,
+                )
             except Exception as error:
                 logger.warning("Failed to stop camera frame reader: %s", error)
             try:
