@@ -21,12 +21,12 @@ from typing import Any, BinaryIO
 from urllib.parse import urlparse
 
 from pose_care import __version__
-from pose_care.config import app_data_dir
+from pose_care.config import app_data_dir, managed_install_dir
 
 
 REPOSITORY_SLUG = "Yuubinkyokutyou/pose-care"
 LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{REPOSITORY_SLUG}/releases/latest"
-RELEASE_ASSET_NAME = "PoseCare-windows-x64.zip"
+RELEASE_ASSET_NAME = "PoseCare-update-windows-x64.zip"
 CHECKSUM_ASSET_NAME = f"{RELEASE_ASSET_NAME}.sha256"
 APPLICATION_EXECUTABLE = "PoseCare.exe"
 INSTALL_MANIFEST_NAME = "PoseCare.install.json"
@@ -288,6 +288,7 @@ class ApplicationUpdater:
         platform_name: str | None = None,
         frozen: bool | None = None,
         executable_path: Path | None = None,
+        install_dir: Path | None = None,
         process_id: int | None = None,
     ) -> None:
         self.current_build = current_build or load_build_info()
@@ -301,17 +302,25 @@ class ApplicationUpdater:
         self.frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
         executable_value = executable_path or Path(sys.executable)
         self.executable_path = Path(os.path.abspath(executable_value))
-        if updates_root is not None:
-            self.updates_root = Path(os.path.abspath(updates_root))
-        elif self.platform_name == "win32" and self.frozen:
-            self.updates_root = self.executable_path.parent.parent / ".PoseCare.updates"
-        else:
-            self.updates_root = app_data_dir() / "updates"
+        install_value = install_dir or managed_install_dir()
+        self.install_dir = Path(os.path.abspath(install_value))
+        updates_value = updates_root or app_data_dir() / "updates"
+        self.updates_root = Path(os.path.abspath(updates_value))
         self.process_id = process_id if process_id is not None else os.getpid()
 
     @property
     def can_apply_update(self) -> bool:
-        return self.platform_name == "win32" and self.frozen
+        return self.update_support_error is None
+
+    @property
+    def update_support_error(self) -> str | None:
+        if self.platform_name != "win32" or not self.frozen:
+            return "自動更新はWindows向けにビルドされたPoseCare.exeでのみ実行できます"
+        if self.executable_path.parent.resolve() != self.install_dir.resolve():
+            return (
+                "自動更新はPoseCareSetupでインストールしたアプリでのみ実行できます"
+            )
+        return None
 
     def check_for_update(
         self, progress: ProgressCallback | None = None
@@ -438,7 +447,7 @@ class ApplicationUpdater:
 
         if not self.can_apply_update:
             raise UpdateNotSupportedError(
-                "自動更新はWindows向けにビルドされたPoseCare.exeでのみ実行できます"
+                self.update_support_error or "この環境では自動更新を実行できません"
             )
         workspace_path = Path(os.path.abspath(prepared.workspace))
         payload_path = Path(os.path.abspath(prepared.payload_dir))
@@ -475,9 +484,9 @@ class ApplicationUpdater:
             )
         if not executable.is_file():
             raise UpdateNotSupportedError("実行中のPoseCare.exeを確認できません")
-        if install_path.name.casefold() != "posecare":
+        if install_dir != self.install_dir.resolve():
             raise UpdateNotSupportedError(
-                "自動更新できるインストール先はPoseCareフォルダーに限定されます"
+                "インストール先がPoseCareSetupの管理対象と一致しません"
             )
         if _is_filesystem_root(install_dir):
             raise UpdateNotSupportedError("ドライブ直下のアプリは自動更新できません")

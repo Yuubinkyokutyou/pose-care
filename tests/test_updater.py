@@ -325,15 +325,23 @@ def test_check_for_update_wraps_network_error(tmp_path):
         updater.check_for_update()
 
 
-def test_frozen_windows_default_workspace_is_install_sibling(tmp_path):
-    executable = tmp_path / "portable" / "PoseCare" / APPLICATION_EXECUTABLE
+def test_frozen_windows_default_workspace_is_local_app_data(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    executable = tmp_path / "outside-install" / "PoseCare" / APPLICATION_EXECUTABLE
     updater = ApplicationUpdater(
         platform_name="win32",
         frozen=True,
         executable_path=executable,
     )
 
-    assert updater.updates_root == tmp_path / "portable" / ".PoseCare.updates"
+    assert updater.updates_root == tmp_path / "local-app-data" / "PoseCare" / "updates"
+    assert updater.install_dir == (
+        tmp_path / "local-app-data" / "Programs" / "PoseCare"
+    )
+    assert not updater.can_apply_update
+    assert "PoseCareSetup" in (updater.update_support_error or "")
 
 
 def test_prepare_update_downloads_verifies_and_extracts_payload(tmp_path):
@@ -557,6 +565,7 @@ def test_launch_update_starts_background_rollback_helper_for_frozen_app(tmp_path
     frozen_updater = ApplicationUpdater(
         current_build=updater.current_build,
         updates_root=tmp_path / "updates",
+        install_dir=install_dir,
         platform_name="win32",
         frozen=True,
         executable_path=executable,
@@ -666,6 +675,7 @@ def test_launch_update_detects_prepared_payload_toctou_before_helper(
     launches = []
     frozen_updater = ApplicationUpdater(
         updates_root=tmp_path / "updates",
+        install_dir=install_dir,
         platform_name="win32",
         frozen=True,
         executable_path=executable,
@@ -699,6 +709,7 @@ def test_launch_update_rejects_shared_folder_sentinel_before_helper(tmp_path):
     launches = []
     frozen_updater = ApplicationUpdater(
         updates_root=tmp_path / "updates",
+        install_dir=install_dir,
         platform_name="win32",
         frozen=True,
         executable_path=executable,
@@ -712,7 +723,7 @@ def test_launch_update_rejects_shared_folder_sentinel_before_helper(tmp_path):
     assert (install_dir / "family-photos.shared-folder-sentinel").is_file()
 
 
-def test_launch_update_requires_install_directory_named_posecare(tmp_path):
+def test_launch_update_requires_setup_managed_install_directory(tmp_path):
     archive = _install_archive({APPLICATION_EXECUTABLE: b"new executable"})
     updater, _, release = _checked_updater(tmp_path, archive)
     prepared = updater.prepare_update(release)
@@ -722,13 +733,14 @@ def test_launch_update_requires_install_directory_named_posecare(tmp_path):
     _write_install_tree(install_dir, {APPLICATION_EXECUTABLE: b"old executable"})
     frozen_updater = ApplicationUpdater(
         updates_root=tmp_path / "updates",
+        install_dir=tmp_path / "local-app-data" / "Programs" / "PoseCare",
         platform_name="win32",
         frozen=True,
         executable_path=executable,
         process_launcher=lambda *args, **kwargs: object(),
     )
 
-    with pytest.raises(UpdateNotSupportedError, match="PoseCareフォルダー"):
+    with pytest.raises(UpdateNotSupportedError, match="PoseCareSetup"):
         frozen_updater.launch_update(prepared)
 
 
@@ -741,6 +753,7 @@ def test_launch_update_rejects_unexpected_executable_name(tmp_path):
     executable.write_bytes(b"not frozen app")
     frozen_updater = ApplicationUpdater(
         updates_root=tmp_path / "updates",
+        install_dir=executable.parent,
         platform_name="win32",
         frozen=True,
         executable_path=executable,
@@ -766,7 +779,7 @@ def test_windows_helper_rolls_back_even_when_new_process_exits_zero(tmp_path):
     updater, _, release = _checked_updater(tmp_path, archive)
     prepared = updater.prepare_update(release)
 
-    install_dir = tmp_path / "portable install" / "PoseCare"
+    install_dir = tmp_path / "local-app-data" / "Programs" / "PoseCare"
     install_dir.mkdir(parents=True)
     executable = install_dir / APPLICATION_EXECUTABLE
     _write_install_tree(
@@ -785,6 +798,7 @@ def test_windows_helper_rolls_back_even_when_new_process_exits_zero(tmp_path):
     frozen_updater = ApplicationUpdater(
         current_build=updater.current_build,
         updates_root=tmp_path / "updates",
+        install_dir=install_dir,
         platform_name="win32",
         frozen=True,
         executable_path=executable,
@@ -826,7 +840,7 @@ def test_windows_helper_rejects_shared_folder_sentinel_added_after_launch(tmp_pa
     )
     updater, _, release = _checked_updater(tmp_path, archive)
     prepared = updater.prepare_update(release)
-    install_dir = tmp_path / "shared folder" / "PoseCare"
+    install_dir = tmp_path / "local-app-data" / "Programs" / "PoseCare"
     install_dir.mkdir(parents=True)
     executable = install_dir / APPLICATION_EXECUTABLE
     _write_install_tree(
@@ -842,6 +856,7 @@ def test_windows_helper_rejects_shared_folder_sentinel_added_after_launch(tmp_pa
     frozen_updater = ApplicationUpdater(
         current_build=updater.current_build,
         updates_root=tmp_path / "updates",
+        install_dir=install_dir,
         platform_name="win32",
         frozen=True,
         executable_path=executable,
@@ -889,7 +904,7 @@ def test_windows_helper_commits_after_matching_ready_handshake(tmp_path):
     )
     updater, _, release = _checked_updater(tmp_path, archive)
     prepared = updater.prepare_update(release)
-    install_dir = tmp_path / "ready install" / "PoseCare"
+    install_dir = tmp_path / "local-app-data" / "Programs" / "PoseCare"
     install_dir.mkdir(parents=True)
     executable = install_dir / APPLICATION_EXECUTABLE
     _write_install_tree(
@@ -908,6 +923,7 @@ def test_windows_helper_commits_after_matching_ready_handshake(tmp_path):
     frozen_updater = ApplicationUpdater(
         current_build=updater.current_build,
         updates_root=tmp_path / "updates",
+        install_dir=install_dir,
         platform_name="win32",
         frozen=True,
         executable_path=executable,

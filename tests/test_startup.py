@@ -57,7 +57,7 @@ class FakeRegistry:
 def test_startup_registration_round_trip_for_frozen_app():
     registry = FakeRegistry()
     startup = StartupRegistration(
-        Path(r"C:\Program Files\PoseCare\PoseCare.exe"),
+        Path(r"C:\Users\test\AppData\Local\Programs\PoseCare\PoseCare.exe"),
         frozen=True,
         platform="win32",
         registry=registry,
@@ -67,7 +67,9 @@ def test_startup_registration_round_trip_for_frozen_app():
     startup.set_enabled(True)
 
     assert startup.is_enabled()
-    assert registry.values[VALUE_NAME] == r'"C:\Program Files\PoseCare\PoseCare.exe"'
+    assert registry.values[VALUE_NAME] == (
+        r"C:\Users\test\AppData\Local\Programs\PoseCare\PoseCare.exe"
+    )
     assert registry.opened_paths == [RUN_KEY, RUN_KEY, RUN_KEY]
 
     startup.set_enabled(False)
