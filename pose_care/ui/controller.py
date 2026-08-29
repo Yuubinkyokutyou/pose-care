@@ -1012,14 +1012,16 @@ class PoseCareController(QObject):
         self.latest_feature = None
         self.latest_landmarks = []
         self._camera_error_text = ""
-        self.camera_worker = CameraWorker(self.settings.camera_index, model_path(), self)
-        self.camera_worker.frame_ready.connect(self._on_frame)
-        self.camera_worker.pose_ready.connect(self._on_pose)
-        self.camera_worker.status_changed.connect(self._on_camera_status)
-        self.camera_worker.model_progress.connect(self._on_model_progress)
-        self.camera_worker.camera_error.connect(self._on_camera_error)
-        self.camera_worker.fps_changed.connect(self._on_fps)
-        self.camera_worker.start()
+        worker = CameraWorker(self.settings.camera_index, model_path(), self)
+        worker.frame_ready.connect(self._on_frame)
+        worker.pose_ready.connect(self._on_pose)
+        worker.status_changed.connect(self._on_camera_status)
+        worker.model_progress.connect(self._on_model_progress)
+        worker.camera_error.connect(self._on_camera_error)
+        worker.fps_changed.connect(self._on_fps)
+        worker.finished.connect(lambda: self._on_camera_worker_finished(worker))
+        self.camera_worker = worker
+        worker.start()
 
     def _restart_camera(self) -> None:
         self._cancel_camera_recovery()
@@ -1031,12 +1033,19 @@ class PoseCareController(QObject):
         self._start_camera()
 
     def _stop_camera(self) -> None:
-        if self.camera_worker is None:
+        worker = self.camera_worker
+        if worker is None:
             return
-        self.camera_worker.request_stop()
-        self.camera_worker.wait(25_000)
-        self.camera_worker.deleteLater()
         self.camera_worker = None
+        worker.request_stop()
+        if not worker.wait(25_000):
+            logger.warning("Camera worker did not stop within 25 seconds")
+        worker.deleteLater()
+
+    def _on_camera_worker_finished(self, worker: CameraWorker) -> None:
+        if self.camera_worker is worker:
+            self.camera_worker = None
+        worker.deleteLater()
 
     def _check_camera_activity(self) -> None:
         if self._quitting:
@@ -1178,14 +1187,17 @@ class PoseCareController(QObject):
     def _on_camera_error(self, message: str, retryable: bool = False) -> None:
         if self._camera_suspended_for_idle:
             return
-        if self._camera_recovery_active and retryable:
+        if retryable:
+            if not self._camera_recovery_active:
+                self._camera_recovery_active = True
+                self._camera_recovery_attempts = 0
             if self._camera_recovery_attempts < CAMERA_RESUME_MAX_FAST_ATTEMPTS:
                 retry_delay_ms = min(
                     CAMERA_RESUME_RETRY_MAX_MS,
                     CAMERA_RESUME_RETRY_BASE_MS
                     * (2 ** max(0, self._camera_recovery_attempts - 1)),
                 )
-                self._camera_status = "顔認証の終了を待ってカメラ接続を再試行します"
+                self._camera_status = "カメラ接続を再試行します"
                 self._camera_error_text = ""
                 self._set_detection_state(DetectionState(kind="starting"))
             else:
@@ -1193,7 +1205,7 @@ class PoseCareController(QObject):
                 self._camera_status = message
                 self._camera_error_text = (
                     "カメラを利用できません\n"
-                    "ほかのアプリを優先して、1分後に再試行します"
+                    "Windowsのカメラ復帰を待って、1分後に再試行します"
                 )
                 self._set_detection_state(DetectionState(kind="no_pose"))
             logger.warning(
@@ -1206,7 +1218,7 @@ class PoseCareController(QObject):
             return
         self._cancel_camera_recovery()
         self._camera_status = message
-        self._camera_error_text = "カメラを利用できません\n設定でカメラ番号を確認してください"
+        self._camera_error_text = f"カメラを利用できません\n{message}"
         self._set_detection_state(DetectionState(kind="no_pose"))
         if self.tray.isVisible():
             self.tray.showMessage(

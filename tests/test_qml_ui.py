@@ -214,6 +214,27 @@ def test_camera_resume_reports_permanent_error_without_retry(tmp_path):
     controller.shutdown()
 
 
+def test_camera_initial_transient_error_starts_recovery(tmp_path):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+
+    controller._on_camera_error("スリープ復帰後にカメラ接続が失われました", True)
+
+    assert controller._camera_recovery_active
+    assert controller._camera_retry_timer.isActive()
+    assert controller._camera_retry_timer.interval() == 3_000
+    assert controller.cameraErrorText == ""
+    assert controller.stateKind == "starting"
+    controller.shutdown()
+
+
 def test_camera_resume_keeps_low_priority_retry_after_fast_attempts(
     tmp_path, monkeypatch
 ):
