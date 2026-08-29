@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 import urllib.request
@@ -18,6 +19,12 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
     "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 )
+
+logger = logging.getLogger(__name__)
+
+CAMERA_FRAME_STALL_TIMEOUT_SECONDS = 10.0
+CAMERA_OPERATION_TIMEOUT_SECONDS = 15.0
+CAMERA_STOP_TIMEOUT_SECONDS = 5.0
 
 UPPER_BODY_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
@@ -37,6 +44,7 @@ class CameraConfigurationError(RuntimeError):
 
 _HRESULT_CAMERA_ACCESS_DENIED = -2_147_024_891  # 0x80070005
 _HRESULT_CAMERA_SHARING_VIOLATION = -2_147_024_864  # 0x80070020
+_HRESULT_INCORRECT_FUNCTION = -2_147_024_895  # 0x80070001
 _HRESULT_UNSUPPORTED_CAPTURE_DEVICE = -1_072_844_856  # 0xC00DAFC8
 _WINERROR_ACCESS_DENIED = 5
 _WINERROR_SHARING_VIOLATION = 32
@@ -55,9 +63,14 @@ def _normalized_error_code(error: Exception) -> int | None:
 
 
 def _camera_open_error_type(error: Exception) -> type[RuntimeError]:
+    if isinstance(error, CameraConnectionError):
+        return CameraConnectionError
+    if isinstance(error, CameraConfigurationError):
+        return CameraConfigurationError
     error_code = _normalized_error_code(error)
     if error_code in (
         _HRESULT_CAMERA_SHARING_VIOLATION,
+        _HRESULT_INCORRECT_FUNCTION,
         _WINERROR_SHARING_VIOLATION,
     ):
         return CameraConnectionError
@@ -68,6 +81,39 @@ def _camera_open_error_type(error: Exception) -> type[RuntimeError]:
     ):
         return CameraConfigurationError
     return CameraConfigurationError
+
+
+def _camera_open_error_message(error: Exception) -> str:
+    error_code = _normalized_error_code(error)
+    if error_code == _HRESULT_INCORRECT_FUNCTION:
+        return "スリープ復帰後にカメラ接続が失われました。再接続します。"
+    if error_code in (
+        _HRESULT_CAMERA_SHARING_VIOLATION,
+        _WINERROR_SHARING_VIOLATION,
+    ):
+        return "カメラはほかの機能で使用中です。再接続します。"
+    if error_code in (_HRESULT_CAMERA_ACCESS_DENIED, _WINERROR_ACCESS_DENIED):
+        return "カメラへのアクセスが拒否されました。Windowsのカメラ権限を確認してください。"
+    if error_code == _HRESULT_UNSUPPORTED_CAPTURE_DEVICE:
+        return "このカメラは必要な共有キャプチャ機能に対応していません。"
+    return str(error) or "カメラを初期化できませんでした。"
+
+
+def _frame_stream_stalled(last_frame_at: float, now: float) -> bool:
+    return now - last_frame_at >= CAMERA_FRAME_STALL_TIMEOUT_SECONDS
+
+
+async def _wait_for_camera_operation(
+    operation: Any,
+    description: str,
+    timeout_seconds: float = CAMERA_OPERATION_TIMEOUT_SECONDS,
+) -> Any:
+    try:
+        return await asyncio.wait_for(operation, timeout_seconds)
+    except TimeoutError as error:
+        raise CameraConnectionError(
+            f"{description}がタイムアウトしました。再接続します。"
+        ) from error
 
 
 def _shared_camera_groups(groups: Sequence[Any], color_kind: Any) -> list[Any]:
@@ -94,6 +140,24 @@ def _shared_camera_groups(groups: Sequence[Any], color_kind: Any) -> list[Any]:
         seen_group_ids.add(group.id)
         result.append(group)
     return result
+
+
+def _select_shared_camera_group(
+    groups: Sequence[Any],
+    camera_index: int,
+    color_kind: Any,
+) -> Any:
+    shared_groups = _shared_camera_groups(groups, color_kind)
+    if not shared_groups:
+        raise CameraConnectionError(
+            "Windowsがカメラを再検出しています。再接続します。"
+        )
+    if camera_index >= len(shared_groups):
+        raise CameraConnectionError(
+            f"共有カメラ {camera_index} の再検出を待っています。"
+            "接続を確認しながら再試行します。"
+        )
+    return shared_groups[camera_index]
 
 
 class SharedCameraCapture:
@@ -124,18 +188,23 @@ class SharedCameraCapture:
             MediaFrameSourceGroup,
             MediaFrameSourceKind,
         )
-        groups = _shared_camera_groups(
-            await MediaFrameSourceGroup.find_all_async(),
+        try:
+            available_groups = await _wait_for_camera_operation(
+                MediaFrameSourceGroup.find_all_async(),
+                "カメラの検出",
+            )
+        except Exception as error:
+            raise _camera_open_error_type(error)(
+                _camera_open_error_message(error)
+            ) from error
+        source_group = _select_shared_camera_group(
+            available_groups,
+            self.camera_index,
             MediaFrameSourceKind.COLOR,
         )
-        if self.camera_index >= len(groups):
-            raise CameraConfigurationError(
-                f"共有カメラ {self.camera_index} が見つかりません。"
-                "設定でカメラ番号を変更してください。"
-            )
 
         settings = MediaCaptureInitializationSettings()
-        settings.source_group = groups[self.camera_index]
+        settings.source_group = source_group
         settings.sharing_mode = MediaCaptureSharingMode.SHARED_READ_ONLY
         settings.memory_preference = MediaCaptureMemoryPreference.CPU
         settings.streaming_capture_mode = StreamingCaptureMode.VIDEO
@@ -144,15 +213,18 @@ class SharedCameraCapture:
         reader = None
         frame_arrived_token = None
         try:
-            await capture.initialize_with_settings_async(settings)
+            await _wait_for_camera_operation(
+                capture.initialize_with_settings_async(settings),
+                "カメラの初期化",
+            )
             sources = [
                 source
                 for source in capture.frame_sources.values()
                 if source.info.source_kind == MediaFrameSourceKind.COLOR
             ]
             if not sources:
-                raise CameraConfigurationError(
-                    "共有カメラにRGB映像ソースがありません。"
+                raise CameraConnectionError(
+                    "カメラのRGB映像ソースを再検出しています。再接続します。"
                 )
             source = min(
                 sources,
@@ -161,10 +233,16 @@ class SharedCameraCapture:
                     item.info.media_stream_type != MediaStreamType.VIDEO_RECORD,
                 ),
             )
-            reader = await capture.create_frame_reader_async(source)
+            reader = await _wait_for_camera_operation(
+                capture.create_frame_reader_async(source),
+                "映像リーダーの作成",
+            )
             reader.acquisition_mode = MediaFrameReaderAcquisitionMode.REALTIME
             frame_arrived_token = reader.add_frame_arrived(self._on_frame_arrived)
-            status = await reader.start_async()
+            status = await _wait_for_camera_operation(
+                reader.start_async(),
+                "カメラ映像の開始",
+            )
             if status != MediaFrameReaderStartStatus.SUCCESS:
                 error_type = (
                     CameraConnectionError
@@ -181,12 +259,32 @@ class SharedCameraCapture:
         except Exception as error:
             if reader is not None:
                 if frame_arrived_token is not None:
-                    reader.remove_frame_arrived(frame_arrived_token)
-                reader.close()
-            capture.close()
+                    try:
+                        reader.remove_frame_arrived(frame_arrived_token)
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Failed to detach camera callback after open error: %s",
+                            cleanup_error,
+                        )
+                try:
+                    reader.close()
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Failed to close camera reader after open error: %s",
+                        cleanup_error,
+                    )
+            try:
+                capture.close()
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Failed to close camera after open error: %s",
+                    cleanup_error,
+                )
             if isinstance(error, (CameraConnectionError, CameraConfigurationError)):
                 raise
-            raise _camera_open_error_type(error)(str(error)) from error
+            raise _camera_open_error_type(error)(
+                _camera_open_error_message(error)
+            ) from error
 
         self._capture = capture
         self._reader = reader
@@ -214,7 +312,9 @@ class SharedCameraCapture:
             error, self._frame_error = self._frame_error, None
             self._frame_available.clear()
         if error is not None:
-            raise error
+            raise CameraConnectionError(
+                "カメラ映像の受信中にデバイス接続が失われました。"
+            ) from error
         return frame
 
     @staticmethod
@@ -281,14 +381,28 @@ class SharedCameraCapture:
         token, self._frame_arrived_token = self._frame_arrived_token, None
         capture, self._capture = self._capture, None
         if reader is not None:
-            try:
-                if token is not None:
+            if token is not None:
+                try:
                     reader.remove_frame_arrived(token)
-                await reader.stop_async()
-            finally:
+                except Exception as error:
+                    logger.warning("Failed to detach camera frame callback: %s", error)
+            try:
+                await _wait_for_camera_operation(
+                    reader.stop_async(),
+                    "カメラ映像の停止",
+                    CAMERA_STOP_TIMEOUT_SECONDS,
+                )
+            except Exception as error:
+                logger.warning("Failed to stop camera frame reader: %s", error)
+            try:
                 reader.close()
+            except Exception as error:
+                logger.warning("Failed to close camera frame reader: %s", error)
         if capture is not None:
-            capture.close()
+            try:
+                capture.close()
+            except Exception as error:
+                logger.warning("Failed to close camera capture: %s", error)
         with self._frame_lock:
             self._latest_frame = None
             self._frame_error = None
@@ -382,6 +496,7 @@ class CameraWorker(QThread):
             )
             with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
                 self.status_changed.emit("カメラ準備完了（共有モード）")
+                last_frame_at = time.perf_counter()
                 last_inference = 0.0
                 last_timestamp_ms = 0
                 frames = 0
@@ -390,9 +505,17 @@ class CameraWorker(QThread):
                 while not self._stop_event.is_set():
                     rgb_frame = camera.read()
                     if rgb_frame is None:
+                        if _frame_stream_stalled(
+                            last_frame_at,
+                            time.perf_counter(),
+                        ):
+                            raise CameraConnectionError(
+                                "カメラ映像が停止しました。接続をやり直します。"
+                            )
                         await asyncio.sleep(0.01)
                         continue
                     now = time.perf_counter()
+                    last_frame_at = now
                     if now - last_inference >= (1.0 / 15.0):
                         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
                         timestamp_ms = max(last_timestamp_ms + 1, int(now * 1000))
@@ -434,7 +557,12 @@ class CameraWorker(QThread):
                         frames = 0
                         fps_started = now
         finally:
-            await camera.close()
+            try:
+                await camera.close()
+            except Exception as error:
+                # Device removal and sleep can invalidate the WinRT reader
+                # before cleanup. Do not replace the recoverable root error.
+                logger.warning("Failed to release camera after disconnect: %s", error)
 
     @classmethod
     def _make_qimage(cls, rgb_frame: np.ndarray, landmarks: list[Landmark]) -> QImage:

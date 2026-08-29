@@ -131,13 +131,24 @@ def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
     stopped = []
     started = []
 
-    def stop_camera():
+    class FakeWorker:
+        def __init__(self):
+            self.stop_requested = False
+            self.deleted = False
+
+        def request_stop(self):
+            self.stop_requested = True
+
+        def deleteLater(self):
+            self.deleted = True
+
+    def stop_camera(*, wait=False):
         stopped.append(True)
         controller.camera_worker = None
 
     def start_camera():
         started.append(True)
-        controller.camera_worker = object()
+        controller.camera_worker = FakeWorker()
 
     monkeypatch.setattr(controller, "_stop_camera", stop_camera)
     monkeypatch.setattr(controller, "_start_camera", start_camera)
@@ -185,8 +196,13 @@ def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
     assert controller._camera_retry_timer.isActive()
     assert controller.stateKind == "starting"
 
+    previous_worker = controller.camera_worker
     controller._retry_camera_after_idle()
+    assert started == [True]
+    assert previous_worker.stop_requested
+    controller._on_camera_worker_finished(previous_worker)
     assert started == [True, True]
+    assert previous_worker.deleted
     controller._on_camera_status("カメラ準備完了（共有モード）")
     assert not controller._camera_recovery_active
     assert not controller._camera_retry_timer.isActive()
@@ -214,6 +230,94 @@ def test_camera_resume_reports_permanent_error_without_retry(tmp_path):
     controller.shutdown()
 
 
+def test_camera_initial_transient_error_starts_recovery(tmp_path):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+
+    controller._on_camera_error("スリープ復帰後にカメラ接続が失われました", True)
+
+    assert controller._camera_recovery_active
+    assert controller._camera_retry_timer.isActive()
+    assert controller._camera_retry_timer.interval() == 3_000
+    assert controller.cameraErrorText == ""
+    assert controller.stateKind == "starting"
+    controller.shutdown()
+
+
+def test_stale_camera_worker_error_does_not_restart_current_worker(tmp_path):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+    current_worker = object()
+    stale_worker = object()
+    controller.camera_worker = current_worker
+
+    controller._on_camera_worker_error(stale_worker, "stale failure", True)
+
+    assert not controller._camera_recovery_active
+    assert not controller._camera_retry_timer.isActive()
+
+    controller._camera_start_pending = True
+    controller._on_camera_worker_error(current_worker, "replacement failure", True)
+
+    assert not controller._camera_recovery_active
+    assert not controller._camera_retry_timer.isActive()
+    controller.camera_worker = None
+    controller.shutdown()
+
+
+def test_camera_shutdown_waits_before_deleting_slow_worker(tmp_path):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+
+    class SlowWorker:
+        def __init__(self):
+            self.stop_requested = False
+            self.deleted = False
+            self.wait_calls = []
+
+        def request_stop(self):
+            self.stop_requested = True
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            return timeout is None
+
+        def deleteLater(self):
+            self.deleted = True
+
+    worker = SlowWorker()
+    controller.camera_worker = worker
+
+    controller._stop_camera(wait=True)
+
+    assert worker.stop_requested
+    assert worker.wait_calls == [25_000, None]
+    assert worker.deleted
+    assert controller.camera_worker is None
+    controller.shutdown()
+
+
 def test_camera_resume_keeps_low_priority_retry_after_fast_attempts(
     tmp_path, monkeypatch
 ):
@@ -237,7 +341,6 @@ def test_camera_resume_keeps_low_priority_retry_after_fast_attempts(
     assert "1分後に再試行" in controller.cameraErrorText
 
     started = []
-    monkeypatch.setattr(controller, "_stop_camera", lambda: None)
     monkeypatch.setattr(controller, "_start_camera", lambda: started.append(True))
     controller._retry_camera_after_idle()
     assert started == [True]

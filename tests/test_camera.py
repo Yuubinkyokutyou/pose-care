@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -6,7 +7,15 @@ import pytest
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QColor, QImage
 
-from pose_care.camera import _camera_open_error_type, _shared_camera_groups
+from pose_care.camera import (
+    CAMERA_FRAME_STALL_TIMEOUT_SECONDS,
+    _camera_open_error_message,
+    _camera_open_error_type,
+    _frame_stream_stalled,
+    _select_shared_camera_group,
+    _shared_camera_groups,
+    _wait_for_camera_operation,
+)
 from pose_care.camera import CameraConfigurationError, CameraConnectionError
 from pose_care.camera import SharedCameraCapture
 
@@ -43,6 +52,7 @@ def test_shared_camera_groups_deduplicate_and_prefer_companion_sensors():
     ("error_code", "expected_type"),
     [
         (-2_147_024_864, CameraConnectionError),  # 0x80070020 sharing violation
+        (-2_147_024_895, CameraConnectionError),  # 0x80070001 after sleep
         (32, CameraConnectionError),
         (-2_147_024_891, CameraConfigurationError),  # 0x80070005 access denied
         (5, CameraConfigurationError),
@@ -50,12 +60,62 @@ def test_shared_camera_groups_deduplicate_and_prefer_companion_sensors():
         (-12345, CameraConfigurationError),
     ],
 )
-def test_camera_open_error_type_only_retries_known_contention(
+def test_camera_open_error_type_retries_device_failures(
     error_code, expected_type
 ):
     error = OSError(error_code, "camera initialization failed")
 
     assert _camera_open_error_type(error) is expected_type
+
+
+def test_camera_open_error_explains_sleep_resume_failure():
+    error = OSError(22, "incorrect function", None, -2_147_024_895)
+
+    assert "スリープ復帰後" in _camera_open_error_message(error)
+
+
+def test_empty_camera_enumeration_is_retryable():
+    with pytest.raises(CameraConnectionError, match="再検出"):
+        _select_shared_camera_group([], 0, object())
+
+
+def test_missing_configured_camera_is_retryable_during_reenumeration():
+    color = object()
+    available = [_group("first", _source("rgb-a", color))]
+
+    with pytest.raises(CameraConnectionError, match="共有カメラ 1"):
+        _select_shared_camera_group(available, 1, color)
+
+
+def test_camera_operation_timeout_is_retryable():
+    async def never_finishes():
+        await asyncio.sleep(60)
+
+    with pytest.raises(CameraConnectionError, match="タイムアウト"):
+        asyncio.run(
+            _wait_for_camera_operation(
+                never_finishes(),
+                "カメラの初期化",
+                0.001,
+            )
+        )
+
+
+def test_retryable_camera_error_stays_retryable_through_open_mapping():
+    error = CameraConnectionError("カメラの検出がタイムアウトしました")
+
+    assert _camera_open_error_type(error) is CameraConnectionError
+
+
+def test_frame_stream_stall_timeout_detects_sleep_gap():
+    assert not _frame_stream_stalled(
+        100.0,
+        100.0 + CAMERA_FRAME_STALL_TIMEOUT_SECONDS - 0.01,
+    )
+    assert _frame_stream_stalled(
+        100.0,
+        100.0 + CAMERA_FRAME_STALL_TIMEOUT_SECONDS,
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="WinRT is only available on Windows")
