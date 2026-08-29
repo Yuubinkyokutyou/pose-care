@@ -325,8 +325,26 @@ def test_check_for_update_wraps_network_error(tmp_path):
         updater.check_for_update()
 
 
-def test_frozen_windows_default_workspace_is_install_sibling(tmp_path):
+def test_frozen_windows_default_workspace_is_app_data(tmp_path, monkeypatch):
+    local_app_data = tmp_path / "local-app-data"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     executable = tmp_path / "portable" / "PoseCare" / APPLICATION_EXECUTABLE
+    updater = ApplicationUpdater(
+        platform_name="win32",
+        frozen=True,
+        executable_path=executable,
+    )
+
+    assert updater.updates_root == local_app_data / "PoseCare" / "updates"
+
+
+def test_frozen_windows_default_workspace_uses_sibling_on_another_volume(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setattr("pose_care.updater._same_volume", lambda *_: False)
+    executable = tmp_path / "portable" / "PoseCare" / APPLICATION_EXECUTABLE
+
     updater = ApplicationUpdater(
         platform_name="win32",
         frozen=True,

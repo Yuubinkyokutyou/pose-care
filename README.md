@@ -62,8 +62,10 @@ py -3.12 -m venv .venv
 
 - `%LOCALAPPDATA%\PoseCare\settings.json`: 設定と登録姿勢の正規化済み特徴量
 - `%LOCALAPPDATA%\PoseCare\posture_history.sqlite3`: 判定区間、該当した登録姿勢名、姿勢通知の時刻
+- `%LOCALAPPDATA%\PoseCare\updates`: 自動更新中だけ使用する一時ファイル
 
 統計履歴はSQLiteで管理し、400日を超えたデータは起動時に自動削除します。カメラ画像、骨格座標、顔画像は保存しません。
+アプリを別ドライブに置いた場合に限り、安全にフォルダーを入れ替えるため、更新用一時ファイルを`PoseCare`フォルダーと同じ階層の`.PoseCare.updates`へ保存します。
 
 ## テスト
 

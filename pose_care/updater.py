@@ -303,10 +303,21 @@ class ApplicationUpdater:
         self.executable_path = Path(os.path.abspath(executable_value))
         if updates_root is not None:
             self.updates_root = Path(os.path.abspath(updates_root))
-        elif self.platform_name == "win32" and self.frozen:
-            self.updates_root = self.executable_path.parent.parent / ".PoseCare.updates"
         else:
-            self.updates_root = app_data_dir() / "updates"
+            data_updates_root = Path(os.path.abspath(app_data_dir() / "updates"))
+            if (
+                self.platform_name == "win32"
+                and self.frozen
+                and not _same_volume(self.executable_path.parent, data_updates_root)
+            ):
+                # Replacing the complete install directory requires atomic moves on
+                # one volume. Portable installs on another drive therefore keep the
+                # workspace beside, but never inside, the PoseCare directory.
+                self.updates_root = (
+                    self.executable_path.parent.parent / ".PoseCare.updates"
+                )
+            else:
+                self.updates_root = data_updates_root
         self.process_id = process_id if process_id is not None else os.getpid()
 
     @property
