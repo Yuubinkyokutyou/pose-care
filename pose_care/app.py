@@ -43,13 +43,8 @@ def _signal_update_ready(release_tag: str) -> bool:
         return False
 
     ready_path = Path(ready_file_value).resolve()
-    allowed_roots = {
-        (app_data_dir() / "updates").resolve(),
-        (Path(sys.executable).resolve().parent.parent / ".PoseCare.updates").resolve(),
-    }
-    if not any(
-        ready_path == root or ready_path.is_relative_to(root) for root in allowed_roots
-    ):
+    updates_root = (app_data_dir() / "updates").resolve()
+    if ready_path != updates_root and not ready_path.is_relative_to(updates_root):
         return False
     if ready_path.name != "update-ready.json" or not ready_path.parent.is_dir():
         return False

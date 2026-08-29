@@ -30,7 +30,18 @@ PCカメラで上半身の姿勢を監視し、登録した悪い姿勢が続い
 - Python 3.12
 - Webカメラ
 
-## セットアップ
+## インストール
+
+GitHub Releasesから `PoseCareSetup-windows-x64.exe` をダウンロードして実行します。
+管理者権限は不要で、アプリ本体は次のユーザー専用領域へ固定でインストールされます。
+
+```text
+%LOCALAPPDATA%\Programs\PoseCare
+```
+
+セットアップはスタートメニューと、選択に応じてデスクトップへショートカットを作成します。以前のZIP展開版を使っていた場合も設定・履歴はそのまま引き継がれます。セットアップ後に新しいショートカットから起動できることを確認したら、以前展開した `PoseCare` フォルダーは削除できます。
+
+## 開発環境のセットアップ
 
 PowerShellで次を実行します。
 
@@ -62,8 +73,11 @@ py -3.12 -m venv .venv
 
 - `%LOCALAPPDATA%\PoseCare\settings.json`: 設定と登録姿勢の正規化済み特徴量
 - `%LOCALAPPDATA%\PoseCare\posture_history.sqlite3`: 判定区間、該当した登録姿勢名、姿勢通知の時刻
+- `%LOCALAPPDATA%\PoseCare\models`: 姿勢推定モデル
+- `%LOCALAPPDATA%\PoseCare\updates`: 自動更新の一時ファイルと更新ログ
 
 統計履歴はSQLiteで管理し、400日を超えたデータは起動時に自動削除します。カメラ画像、骨格座標、顔画像は保存しません。
+アプリ本体は `%LOCALAPPDATA%\Programs\PoseCare` に保存し、デスクトップやアプリ本体の親フォルダーへ更新ファイルは作成しません。
 
 ## テスト
 
@@ -71,22 +85,26 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## exeの作成（任意）
+## WindowsアプリとセットアップEXEの作成（任意）
+
+事前にPythonの開発依存関係とInno Setupをインストールします。
 
 ```powershell
 .\scripts\build.ps1
 ```
 
-`dist\PoseCare\PoseCare.exe` が生成されます。モデルは初回起動時にユーザー領域へダウンロードされます。
+`dist\PoseCare\PoseCare.exe` と `dist\installer\PoseCareSetup-windows-x64.exe` が生成されます。アプリ本体だけを確認する場合は `build.ps1 -SkipInstaller` を指定できます。モデルは初回起動時にユーザー領域へダウンロードされます。
 
 ## GitHub Releasesへの自動公開
 
 `main` ブランチへ変更が入ると、GitHub Actionsがテスト、Windows x64版のビルド、SHA-256生成、GitHub Releaseの公開までを実行します。手動実行にも対応しています。
 
-Releaseには次の3ファイルが添付されます。
+Releaseには次の5ファイルが添付されます。
 
-- `PoseCare-windows-x64.zip`: `PoseCare` 専用フォルダーに格納されたアプリ本体
-- `PoseCare-windows-x64.zip.sha256`: アプリが更新前に照合するSHA-256
+- `PoseCareSetup-windows-x64.exe`: ユーザーが実行するインストーラー
+- `PoseCareSetup-windows-x64.exe.sha256`: インストーラーのSHA-256
+- `PoseCare-update-windows-x64.zip`: アプリ内の自動更新専用パッケージ
+- `PoseCare-update-windows-x64.zip.sha256`: アプリが更新前に照合するSHA-256
 - `release.json`: バージョン、ビルド番号、コミットの情報
 
-タグは `v<version>-build.<Actions run ID>.<再実行番号>` の形式です。ZIPを手動展開する場合も、ZIP内の `PoseCare` フォルダーを保ったまま配置し、中身だけをDownloadsなどの既存フォルダーへ直接展開しないでください。設定画面の自動更新は配布版の `PoseCare.exe` で利用できます。ソースから `run.ps1` で起動している開発環境では、安全のためファイルの自動置換は行いません。
+タグは `v<version>-build.<Actions run ID>.<再実行番号>` の形式です。通常のインストールにはセットアップEXEを使い、更新ZIPは手動展開しません。設定画面の自動更新はセットアップ版の `PoseCare.exe` で利用できます。ソースから `run.ps1` で起動している開発環境や、管理対象外の場所へ直接置いたexeではファイルの自動置換を行いません。

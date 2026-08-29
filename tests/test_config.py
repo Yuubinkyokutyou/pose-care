@@ -1,5 +1,12 @@
-from pose_care.config import SettingsStore
+from pose_care.config import SettingsStore, app_data_dir, managed_install_dir
 from pose_care.models import AppSettings, PostureProfile
+
+
+def test_user_data_and_managed_install_are_separate(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    assert app_data_dir() == tmp_path / "PoseCare"
+    assert managed_install_dir() == tmp_path / "Programs" / "PoseCare"
 
 
 def test_settings_round_trip(tmp_path):

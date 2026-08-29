@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$SkipInstaller
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -107,3 +109,50 @@ $manifestJson = $installManifest | ConvertTo-Json -Depth 3
 
 Write-Host "Build completed: $executablePath"
 Write-Host "Install manifest created: $installManifestPath ($($manifestFiles.Count) hashed files)"
+
+if ($SkipInstaller) {
+    return
+}
+
+$innoCompilerCandidates = @(
+    (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -Unique
+$innoCompiler = $innoCompilerCandidates | Select-Object -First 1
+if (-not $innoCompiler) {
+    throw "Inno Setup Compiler (ISCC.exe) がありません。Inno Setupをインストールするか、アプリ本体だけを作る場合は -SkipInstaller を指定してください。"
+}
+
+$version = (& $pythonPath -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])").Trim()
+if ($LASTEXITCODE -ne 0 -or $version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+    throw "pyproject.tomlから有効なバージョンを読み取れませんでした。"
+}
+
+$installerOutput = Join-Path $distPath "installer"
+New-Item -ItemType Directory -Path $installerOutput -Force | Out-Null
+$previousInstallerVersion = $env:POSE_CARE_INSTALLER_VERSION
+$previousInstallerSource = $env:POSE_CARE_INSTALLER_SOURCE
+$previousInstallerOutput = $env:POSE_CARE_INSTALLER_OUTPUT
+try {
+    $env:POSE_CARE_INSTALLER_VERSION = $version
+    $env:POSE_CARE_INSTALLER_SOURCE = $installDirectory
+    $env:POSE_CARE_INSTALLER_OUTPUT = $installerOutput
+    & $innoCompiler (Join-Path $PSScriptRoot "installer.iss")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    $env:POSE_CARE_INSTALLER_VERSION = $previousInstallerVersion
+    $env:POSE_CARE_INSTALLER_SOURCE = $previousInstallerSource
+    $env:POSE_CARE_INSTALLER_OUTPUT = $previousInstallerOutput
+}
+
+$installerPath = Join-Path $installerOutput "PoseCareSetup-windows-x64.exe"
+if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+    throw "Installer build completed without the expected executable: $installerPath"
+}
+Write-Host "Installer completed: $installerPath"

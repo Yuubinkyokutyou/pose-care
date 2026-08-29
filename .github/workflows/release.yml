@@ -27,6 +27,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       commit: ${{ steps.release.outputs.commit }}
       sha256: ${{ steps.package.outputs.sha256 }}
+      setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
 
     steps:
       - name: Check out main revision
@@ -84,7 +85,7 @@ jobs:
               version = $version
               tag = $tag
               commit = $commit
-              asset = "PoseCare-windows-x64.zip"
+              asset = "PoseCare-update-windows-x64.zip"
               built_at = [DateTime]::UtcNow.ToString("o")
           }
           $metadata | ConvertTo-Json | Set-Content -LiteralPath "pose_care\release.json" -Encoding utf8NoBOM
@@ -105,6 +106,7 @@ jobs:
           $executable = Join-Path $distDirectory "PoseCare.exe"
           $installManifest = Join-Path $distDirectory "PoseCare.install.json"
           $embeddedMetadata = Join-Path $distDirectory "_internal\pose_care\release.json"
+          $builtInstaller = Join-Path (Get-Location).Path "dist\installer\PoseCareSetup-windows-x64.exe"
           if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
               throw "Expected executable was not built: $executable"
           }
@@ -113,6 +115,9 @@ jobs:
           }
           if (-not (Test-Path -LiteralPath $embeddedMetadata -PathType Leaf)) {
               throw "Release metadata was not embedded: $embeddedMetadata"
+          }
+          if (-not (Test-Path -LiteralPath $builtInstaller -PathType Leaf)) {
+              throw "Expected setup executable was not built: $builtInstaller"
           }
 
           $installManifestPayload = Get-Content -LiteralPath $installManifest -Raw | ConvertFrom-Json
@@ -190,7 +195,7 @@ jobs:
           }
 
           New-Item -ItemType Directory -Path "release" -Force | Out-Null
-          $archive = "release\PoseCare-windows-x64.zip"
+          $archive = "release\PoseCare-update-windows-x64.zip"
           # Preserve the PoseCare directory as the only top-level install root.
           Compress-Archive -Path $distDirectory -DestinationPath $archive -CompressionLevel Optimal
 
@@ -237,10 +242,15 @@ jobs:
           }
 
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  PoseCare-windows-x64.zip" | Set-Content -LiteralPath "release\PoseCare-windows-x64.zip.sha256" -Encoding ascii
+          "$hash  PoseCare-update-windows-x64.zip" | Set-Content -LiteralPath "release\PoseCare-update-windows-x64.zip.sha256" -Encoding ascii
+          $setup = "release\PoseCareSetup-windows-x64.exe"
+          Copy-Item -LiteralPath $builtInstaller -Destination $setup
+          $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$setupHash  PoseCareSetup-windows-x64.exe" | Set-Content -LiteralPath "release\PoseCareSetup-windows-x64.exe.sha256" -Encoding ascii
           Copy-Item -LiteralPath "pose_care\release.json" -Destination "release\release.json"
 
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha256=$hash"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "setup_sha256=$setupHash"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -275,18 +285,21 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
           RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
           RELEASE_SHA256: ${{ needs.build.outputs.sha256 }}
+          RELEASE_SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
         run: |
           Set-StrictMode -Version Latest
-          $archive = "release\PoseCare-windows-x64.zip"
-          $checksum = "release\PoseCare-windows-x64.zip.sha256"
+          $archive = "release\PoseCare-update-windows-x64.zip"
+          $checksum = "release\PoseCare-update-windows-x64.zip.sha256"
+          $setup = "release\PoseCareSetup-windows-x64.exe"
+          $setupChecksum = "release\PoseCareSetup-windows-x64.exe.sha256"
           $metadataPath = "release\release.json"
-          foreach ($requiredPath in @($archive, $checksum, $metadataPath)) {
+          foreach ($requiredPath in @($archive, $checksum, $setup, $setupChecksum, $metadataPath)) {
               if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
                   throw "Downloaded release artifact is incomplete: $requiredPath"
               }
           }
           $downloadedFiles = @(Get-ChildItem -LiteralPath "release" -File -Force)
-          if ($downloadedFiles.Count -ne 3) {
+          if ($downloadedFiles.Count -ne 5) {
               throw "Downloaded release artifact contains unexpected files."
           }
 
@@ -295,8 +308,16 @@ jobs:
               throw "Downloaded release archive does not match the build job SHA-256."
           }
           $checksumLine = (Get-Content -LiteralPath $checksum -Raw).Trim()
-          if ($checksumLine -cne "$archiveHash  PoseCare-windows-x64.zip") {
+          if ($checksumLine -cne "$archiveHash  PoseCare-update-windows-x64.zip") {
               throw "Downloaded checksum file is inconsistent."
+          }
+          $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($setupHash -cne $env:RELEASE_SETUP_SHA256) {
+              throw "Downloaded setup executable does not match the build job SHA-256."
+          }
+          $setupChecksumLine = (Get-Content -LiteralPath $setupChecksum -Raw).Trim()
+          if ($setupChecksumLine -cne "$setupHash  PoseCareSetup-windows-x64.exe") {
+              throw "Downloaded setup checksum file is inconsistent."
           }
           $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
           if ($metadata.version -cne $env:RELEASE_VERSION -or
@@ -310,14 +331,20 @@ jobs:
 
           - Version: $env:RELEASE_VERSION
           - Commit: $env:RELEASE_COMMIT
-          - SHA-256: ``$env:RELEASE_SHA256``
+          - Setup SHA-256: ``$env:RELEASE_SETUP_SHA256``
 
-          Download ``PoseCare-windows-x64.zip``, extract it, and run ``PoseCare\PoseCare.exe``.
+          Download and run ``PoseCareSetup-windows-x64.exe``. It installs PoseCare for the
+          current user in ``%LOCALAPPDATA%\Programs\PoseCare`` and creates shortcuts.
+
+          ``PoseCare-update-windows-x64.zip`` is reserved for PoseCare's built-in updater and is
+          not the end-user installation package.
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8NoBOM
 
           gh release create $env:RELEASE_TAG `
-              "release\PoseCare-windows-x64.zip" `
-              "release\PoseCare-windows-x64.zip.sha256" `
+              "release\PoseCare-update-windows-x64.zip" `
+              "release\PoseCare-update-windows-x64.zip.sha256" `
+              "release\PoseCareSetup-windows-x64.exe" `
+              "release\PoseCareSetup-windows-x64.exe.sha256" `
               "release\release.json" `
               --repo $env:GITHUB_REPOSITORY `
               --target $env:RELEASE_COMMIT `

@@ -767,8 +767,8 @@ class PoseCareController(QObject):
         if self._update_state == "available" and self._update_check is not None:
             if not self.updater.can_apply_update:
                 self._update_state = "error"
-                self._update_status = (
-                    "自動更新はWindows向けにビルドされたPoseCare.exeでのみ実行できます"
+                self._update_status = self.updater.update_support_error or (
+                    "この環境では自動更新を実行できません"
                 )
                 self.updateChanged.emit()
                 return

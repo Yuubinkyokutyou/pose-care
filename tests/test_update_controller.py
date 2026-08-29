@@ -39,6 +39,11 @@ class FakeApplicationUpdater:
     def __init__(self, *, can_apply_update: bool = True) -> None:
         self.current_build = BuildInfo("v0.2.0-build.10.1", "0.2.0")
         self.can_apply_update = can_apply_update
+        self.update_support_error = (
+            None
+            if can_apply_update
+            else "自動更新はWindows向けにビルドされたPoseCare.exeでのみ実行できます"
+        )
         self.check_outcome: UpdateCheck | BaseException | None = None
         self.prepare_outcome: PreparedUpdate | BaseException | None = None
         self.check_calls = 0
@@ -112,7 +117,7 @@ def _prepared_update(tmp_path: Path, release: ReleaseInfo) -> PreparedUpdate:
     return PreparedUpdate(
         release=release,
         workspace=workspace,
-        archive_path=workspace / "PoseCare-windows-x64.zip",
+        archive_path=workspace / "PoseCare-update-windows-x64.zip",
         payload_dir=payload,
         sha256="a" * 64,
         manifest_sha256="b" * 64,

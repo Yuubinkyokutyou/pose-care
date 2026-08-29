@@ -10,11 +10,21 @@ from pose_care.models import AppSettings
 APP_NAME = "PoseCare"
 
 
-def app_data_dir() -> Path:
+def local_app_data_dir() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / APP_NAME
-    return Path.home() / "AppData" / "Local" / APP_NAME
+        return Path(local_app_data)
+    return Path.home() / "AppData" / "Local"
+
+
+def app_data_dir() -> Path:
+    return local_app_data_dir() / APP_NAME
+
+
+def managed_install_dir() -> Path:
+    """Return the only supported per-user installation directory."""
+
+    return local_app_data_dir() / "Programs" / APP_NAME
 
 
 class SettingsStore:
