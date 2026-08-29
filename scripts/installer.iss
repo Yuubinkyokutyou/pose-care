@@ -56,6 +56,9 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 [Tasks]
 Name: "desktopicon"; Description: "デスクトップにショートカットを作成する"; GroupDescription: "追加のショートカット:"; Flags: checkedonce
 
+[InstallDelete]
+Type: filesandordirs; Name: "{app}"; Check: IsManagedInstallDirectory
+
 [Files]
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -71,9 +74,53 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "PoseCareを起動する"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}"
+Type: filesandordirs; Name: "{app}"; Check: IsManagedInstallDirectory
 
 [Code]
+function NormalizedPath(Value: String): String;
+begin
+  Result := RemoveBackslashUnlessRoot(
+    PathNormalizeSlashes(ExpandFileName(Value))
+  );
+end;
+
+function ManagedInstallDirectory(): String;
+begin
+  Result := NormalizedPath(
+    ExpandConstant('{localappdata}\Programs\PoseCare')
+  );
+end;
+
+function IsManagedInstallDirectory(): Boolean;
+var
+  ActualDirectory: String;
+begin
+  ActualDirectory := NormalizedPath(ExpandConstant('{app}'));
+  Result := PathSame(ActualDirectory, ManagedInstallDirectory());
+  if not Result then
+    Log('Refusing recursive deletion outside the managed install directory: ' +
+      ActualDirectory);
+end;
+
+procedure InitializeWizard;
+begin
+  { /DIR and /LOADINF must not move this per-user installation. }
+  WizardForm.DirEdit.Text := ManagedInstallDirectory();
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  { Re-apply and verify the invariant immediately before installation. }
+  WizardForm.DirEdit.Text := ManagedInstallDirectory();
+  if not PathSame(
+    NormalizedPath(WizardDirValue()),
+    ManagedInstallDirectory()
+  ) then
+    Result := 'インストール先をユーザー専用領域に固定できませんでした。'
+  else
+    Result := '';
+end;
+
 function ExistingStartupRegistration(): Boolean;
 var
   ExistingValue: String;
