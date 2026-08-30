@@ -150,6 +150,7 @@ class PoseCareController(QObject):
         self._window: Any | None = None
         self._monitoring = True
         self._camera_suspended_for_idle = False
+        self._session_locked = False
         self._camera_recovery_active = False
         self._camera_recovery_attempts = 0
         self._camera_start_pending = False
@@ -997,6 +998,7 @@ class PoseCareController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        self._quitting = True
         self._update_shutdown.set()
         self._discard_prepared_update()
         self._statistics_timer.stop()
@@ -1007,8 +1009,16 @@ class PoseCareController(QObject):
             self.history.close()
             self._history_closed = True
 
+    @property
+    def _camera_is_suspended(self) -> bool:
+        return self._camera_suspended_for_idle or self._session_locked
+
     def _start_camera(self) -> None:
-        if self.camera_worker is not None or self._quitting:
+        if (
+            self.camera_worker is not None
+            or self._quitting
+            or self._camera_is_suspended
+        ):
             return
         self.latest_feature = None
         self.latest_landmarks = []
@@ -1071,7 +1081,7 @@ class PoseCareController(QObject):
         worker.deleteLater()
         if (
             self._camera_start_pending
-            and not self._camera_suspended_for_idle
+            and not self._camera_is_suspended
             and not self._quitting
         ):
             self._start_camera()
@@ -1091,7 +1101,7 @@ class PoseCareController(QObject):
         self._on_camera_error(message, retryable)
 
     def _check_camera_activity(self) -> None:
-        if self._quitting:
+        if self._quitting or self._session_locked:
             return
         try:
             user_idle_seconds = max(0.0, float(self._idle_seconds_provider()))
@@ -1137,11 +1147,46 @@ class PoseCareController(QObject):
         self._set_detection_state(DetectionState(kind="starting"))
         self._camera_retry_timer.start(CAMERA_RESUME_GRACE_PERIOD_MS)
 
+    def set_session_locked(self, locked: bool) -> None:
+        if self._session_locked == locked:
+            return
+        self._session_locked = locked
+        if locked:
+            self._suspend_camera_for_session_lock()
+        else:
+            self._resume_camera_after_session_unlock()
+
+    def _suspend_camera_for_session_lock(self) -> None:
+        self._cancel_camera_recovery()
+        self.detector.reset()
+        self.latest_feature = None
+        self.latest_landmarks = []
+        self._metrics = self._empty_metrics()
+        self._stop_camera()
+        self.image_provider.clear()
+        self._frame_serial += 1
+        self.frameChanged.emit()
+        self._camera_status = "Windowsがロックされたためカメラを停止しました"
+        self._fps_text = "カメラ停止中"
+        self._set_detection_state(DetectionState(kind="locked"))
+
+    def _resume_camera_after_session_unlock(self) -> None:
+        if self._quitting:
+            return
+        self._camera_suspended_for_idle = False
+        self._camera_recovery_active = True
+        self._camera_recovery_attempts = 0
+        self._last_person_seen_at = time.monotonic()
+        self._camera_status = "顔認証の終了を待ってカメラを再開します"
+        self._fps_text = "解析 — fps"
+        self._set_detection_state(DetectionState(kind="starting"))
+        self._camera_retry_timer.start(CAMERA_RESUME_GRACE_PERIOD_MS)
+
     def _retry_camera_after_idle(self) -> None:
         self._camera_retry_timer.stop()
         if (
             not self._camera_recovery_active
-            or self._camera_suspended_for_idle
+            or self._camera_is_suspended
             or self._quitting
         ):
             return
@@ -1157,7 +1202,7 @@ class PoseCareController(QObject):
         self._camera_recovery_attempts = 0
 
     def _on_frame(self, image: Any) -> None:
-        if self._camera_suspended_for_idle:
+        if self._camera_is_suspended:
             return
         if self._window is None or not self._window.isVisible():
             return
@@ -1166,7 +1211,7 @@ class PoseCareController(QObject):
         self.frameChanged.emit()
 
     def _on_pose(self, feature: PoseFeature | None, landmarks: Any) -> None:
-        if self._camera_suspended_for_idle:
+        if self._camera_is_suspended:
             return
         self.latest_feature = feature
         self.latest_landmarks = landmarks
@@ -1198,12 +1243,15 @@ class PoseCareController(QObject):
             self._send_posture_notification(state.profile_name or "登録した姿勢")
 
     def _on_camera_status(self, status: str) -> None:
-        if self._camera_suspended_for_idle:
+        if self._camera_is_suspended:
             return
         if status.startswith("カメラ準備完了"):
             self._cancel_camera_recovery()
         self._camera_status = status
-        self.uiChanged.emit()
+        if status.startswith("カメラ準備完了") and not self._monitoring:
+            self._set_detection_state(DetectionState(kind="paused"))
+        else:
+            self.uiChanged.emit()
         has_compatible_profile = any(
             profile.feature_version == POSTURE_FEATURE_VERSION
             and profile.posture_type == "bad"
@@ -1219,13 +1267,13 @@ class PoseCareController(QObject):
             QTimer.singleShot(550, lambda: self.beginRegistration("bad", True))
 
     def _on_model_progress(self, value: int) -> None:
-        if self._camera_suspended_for_idle:
+        if self._camera_is_suspended:
             return
         self._camera_status = f"姿勢モデルをダウンロードしています… {value}%"
         self.uiChanged.emit()
 
     def _on_camera_error(self, message: str, retryable: bool = False) -> None:
-        if self._camera_suspended_for_idle:
+        if self._camera_is_suspended:
             return
         if retryable:
             if not self._camera_recovery_active:
@@ -1269,7 +1317,7 @@ class PoseCareController(QObject):
             )
 
     def _on_fps(self, fps: float) -> None:
-        if self._camera_suspended_for_idle:
+        if self._camera_is_suspended:
             return
         self._fps_text = f"解析 {fps:.0f} fps"
         self.uiChanged.emit()
@@ -1326,6 +1374,10 @@ class PoseCareController(QObject):
             self._state_title = "カメラを自動停止中"
             self._state_detail = "キーボードやマウスを操作すると自動で再開します"
             tooltip = "PoseCare — 無人・無操作のためカメラ停止中"
+        elif state.kind == "locked":
+            self._state_title = "Windowsロック中はカメラを停止します"
+            self._state_detail = "ロックを解除すると自動で再開します"
+            tooltip = "PoseCare — Windowsロックのためカメラ停止中"
         else:
             self._state_title = "準備しています"
             self._state_detail = "カメラと姿勢モデルを起動しています"

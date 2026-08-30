@@ -15,6 +15,7 @@ from pose_care.config import SettingsStore, app_data_dir
 from pose_care.ui.controller import PoseCareController
 from pose_care.ui.image_provider import CameraImageProvider
 from pose_care.ui.style import configure_font, make_app_icon
+from pose_care.windows_session import WindowsSessionMonitor
 
 
 _UPDATE_READY_FILE_ENV = "POSE_CARE_UPDATE_READY_FILE"
@@ -118,6 +119,9 @@ def main() -> int:
 
     window = engine.rootObjects()[0]
     controller.attach_window(window)
+    session_monitor = WindowsSessionMonitor(controller.set_session_locked)
+    session_monitor.start(window)
+    application.aboutToQuit.connect(session_monitor.close)
     application.aboutToQuit.connect(controller.shutdown)
     controller.start()
     controller.show_initial_window()

@@ -286,6 +286,7 @@ ApplicationWindow {
                                 Text {
                                     anchors.horizontalCenter: parent.horizontalCenter
                                     text: controller.stateKind === "idle"
+                                          || controller.stateKind === "locked"
                                           ? "CAMERA RELEASED" : "POSTURE CAMERA"
                                     color: theme.signal
                                     font.family: theme.dataFont
@@ -295,7 +296,9 @@ ApplicationWindow {
                                 }
                                 Text {
                                     anchors.horizontalCenter: parent.horizontalCenter
-                                    text: controller.stateKind === "idle"
+                                    text: controller.stateKind === "locked"
+                                          ? "Windowsのロック解除後に自動で再開します"
+                                          : controller.stateKind === "idle"
                                           ? "操作を検知すると自動で再開します"
                                           : "カメラ映像を準備しています"
                                     color: theme.muted
@@ -322,12 +325,15 @@ ApplicationWindow {
                                         width: 6
                                         height: 6
                                         radius: 3
-                                        color: controller.monitoring && controller.stateKind !== "idle"
+                                        color: controller.monitoring
+                                               && controller.stateKind !== "idle"
+                                               && controller.stateKind !== "locked"
                                                ? theme.signal : theme.muted
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     Text {
-                                        text: controller.stateKind === "idle" ? "CAMERA OFF"
+                                        text: controller.stateKind === "idle"
+                                              || controller.stateKind === "locked" ? "CAMERA OFF"
                                               : controller.monitoring ? "LIVE / LOCAL" : "PAUSED"
                                         color: theme.text
                                         font.family: theme.dataFont

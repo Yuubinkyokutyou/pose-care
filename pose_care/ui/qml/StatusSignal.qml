@@ -30,7 +30,8 @@ Item {
             radius: 2
             color: root.stateColor
             opacity: root.stateKind === "starting" || root.stateKind === "paused"
-                     || root.stateKind === "idle" ? 0.38 : 1
+                     || root.stateKind === "idle"
+                     || root.stateKind === "locked" ? 0.38 : 1
             Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
         }
     }
@@ -81,7 +82,8 @@ Item {
               : root.stateKind === "warning" ? "CHECKING"
               : root.stateKind === "bad" ? "RESET"
               : root.stateKind === "paused" ? "PAUSED"
-              : root.stateKind === "idle" ? "CAMERA OFF" : "SCANNING"
+              : root.stateKind === "idle" || root.stateKind === "locked"
+              ? "CAMERA OFF" : "SCANNING"
         color: root.stateColor
         font.family: theme.dataFont
         font.pixelSize: 10
