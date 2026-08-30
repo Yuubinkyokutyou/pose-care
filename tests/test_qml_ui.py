@@ -209,6 +209,59 @@ def test_camera_stops_only_after_no_person_and_no_input_then_resumes(
     controller.shutdown()
 
 
+def test_windows_lock_releases_camera_until_session_unlock(tmp_path, monkeypatch):
+    _application()
+    provider = CameraImageProvider()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        provider,
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        idle_seconds_provider=lambda: 0.0,
+    )
+    controller.camera_worker = object()
+    stopped = []
+    started = []
+
+    def stop_camera(*, wait=False):
+        stopped.append(wait)
+        controller.camera_worker = None
+
+    def start_camera():
+        started.append(True)
+        controller.camera_worker = object()
+
+    monkeypatch.setattr(controller, "_stop_camera", stop_camera)
+    monkeypatch.setattr(controller, "_start_camera", start_camera)
+
+    controller.toggleMonitoring(False)
+    controller.set_session_locked(True)
+
+    assert stopped == [False]
+    assert controller._session_locked
+    assert controller.stateKind == "locked"
+    assert controller.cameraStatus == "Windowsがロックされたためカメラを停止しました"
+    assert not controller._camera_retry_timer.isActive()
+
+    # Input on the lock screen must not reclaim the camera before Windows Hello.
+    controller._check_camera_activity()
+    controller._retry_camera_after_idle()
+    assert started == []
+
+    controller.set_session_locked(False)
+
+    assert not controller._session_locked
+    assert controller.stateKind == "starting"
+    assert controller._camera_retry_timer.isActive()
+    assert not controller.monitoring
+
+    controller._retry_camera_after_idle()
+    assert started == [True]
+    controller.shutdown()
+
+
 def test_camera_resume_reports_permanent_error_without_retry(tmp_path):
     _application()
     controller = PoseCareController(
