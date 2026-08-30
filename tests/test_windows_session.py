@@ -54,11 +54,15 @@ def test_session_monitor_registers_and_unregisters_window(monkeypatch):
     )
     monkeypatch.setattr(
         "pose_care.windows_session._register_session_notifications",
-        lambda handle: registered.append(handle) or True,
+        lambda handle: (registered.append(handle) or True, 0),
     )
     monkeypatch.setattr(
         "pose_care.windows_session._unregister_session_notifications",
-        lambda handle: unregistered.append(handle) or True,
+        lambda handle: (unregistered.append(handle) or True, 0),
+    )
+    monkeypatch.setattr(
+        "pose_care.windows_session._query_current_session_locked",
+        lambda: False,
     )
 
     monitor = WindowsSessionMonitor(lambda _locked: None)
@@ -73,3 +77,88 @@ def test_session_monitor_registers_and_unregisters_window(monkeypatch):
     assert installed == [monitor]
     assert removed == [monitor]
     assert unregistered == [12345]
+
+
+def test_session_monitor_retries_when_terminal_services_is_not_ready(monkeypatch):
+    registration_results = [(False, 1702), (True, 0)]
+
+    class FakeSignal:
+        def connect(self, callback):
+            self.callback = callback
+
+    class FakeTimer:
+        def __init__(self):
+            self.timeout = FakeSignal()
+            self.active = False
+
+        def setSingleShot(self, _single_shot):
+            pass
+
+        def setInterval(self, _interval):
+            pass
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        def isActive(self):
+            return self.active
+
+    application = SimpleNamespace(
+        installNativeEventFilter=lambda _monitor: None,
+        removeNativeEventFilter=lambda _monitor: None,
+    )
+    monkeypatch.setattr(
+        "pose_care.windows_session.QCoreApplication.instance",
+        lambda: application,
+    )
+    monkeypatch.setattr(
+        "pose_care.windows_session._register_session_notifications",
+        lambda _handle: registration_results.pop(0),
+    )
+    monkeypatch.setattr(
+        "pose_care.windows_session._unregister_session_notifications",
+        lambda _handle: (True, 0),
+    )
+    monkeypatch.setattr(
+        "pose_care.windows_session._query_current_session_locked",
+        lambda: True,
+    )
+    monkeypatch.setattr("pose_care.windows_session.QTimer", FakeTimer)
+
+    transitions = []
+    monitor = WindowsSessionMonitor(transitions.append)
+
+    assert not monitor.start(SimpleNamespace(winId=lambda: 12345))
+    assert monitor._registration_retry_timer is not None
+    assert monitor._registration_retry_timer.isActive()
+    monitor._try_register()
+
+    assert monitor._registered
+    assert not monitor._registration_retry_timer.isActive()
+    assert transitions == [True]
+    monitor.close()
+
+
+def test_session_monitor_unregisters_before_registered_window_is_destroyed(
+    monkeypatch,
+):
+    unregistered = []
+    monitor = WindowsSessionMonitor(lambda _locked: None)
+    monitor._window_handle = 12345
+    monitor._registered = True
+    monkeypatch.setattr(
+        "pose_care.windows_session._unregister_session_notifications",
+        lambda handle: (unregistered.append(handle) or True, 0),
+    )
+    message = wintypes.MSG()
+    message.hWnd = 12345
+    message.message = 0x0002
+
+    monitor.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(message))
+
+    assert unregistered == [12345]
+    assert not monitor._registered
+    assert monitor._window_handle is None

@@ -259,6 +259,27 @@ def test_windows_lock_releases_camera_until_session_unlock(tmp_path, monkeypatch
 
     controller._retry_camera_after_idle()
     assert started == [True]
+    controller._on_camera_status("カメラ準備完了（共有モード）")
+    assert controller.stateKind == "paused"
+    controller.shutdown()
+
+
+def test_camera_does_not_start_when_app_begins_while_session_locked(tmp_path):
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+    )
+
+    controller.set_session_locked(True)
+    controller.start()
+
+    assert controller.camera_worker is None
+    assert controller.stateKind == "locked"
     controller.shutdown()
 
 

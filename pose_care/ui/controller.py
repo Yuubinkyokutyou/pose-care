@@ -1248,7 +1248,10 @@ class PoseCareController(QObject):
         if status.startswith("カメラ準備完了"):
             self._cancel_camera_recovery()
         self._camera_status = status
-        self.uiChanged.emit()
+        if status.startswith("カメラ準備完了") and not self._monitoring:
+            self._set_detection_state(DetectionState(kind="paused"))
+        else:
+            self.uiChanged.emit()
         has_compatible_profile = any(
             profile.feature_version == POSTURE_FEATURE_VERSION
             and profile.posture_type == "bad"
