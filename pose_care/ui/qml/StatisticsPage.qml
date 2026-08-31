@@ -235,7 +235,7 @@ Item {
                             Row {
                                 spacing: 5
                                 Rectangle { width: 7; height: 7; radius: 4; color: page.theme.signal; anchors.verticalCenter: parent.verticalCenter }
-                                Text { text: "良好"; color: page.theme.muted; font.family: page.theme.bodyFont; font.pixelSize: 9 }
+                                Text { text: "良い姿勢"; color: page.theme.muted; font.family: page.theme.bodyFont; font.pixelSize: 9 }
                             }
                             Row {
                                 spacing: 5

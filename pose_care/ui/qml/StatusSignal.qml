@@ -100,7 +100,7 @@ Item {
         id: stateLabel
         anchors.centerIn: stateBadge
         text: root.stateKind === "normal" ? "通知対象外"
-              : root.stateKind === "good" ? "良好"
+              : root.stateKind === "good" ? "問題なし"
               : root.stateKind === "warning" ? "確認中"
               : root.stateKind === "bad" ? "悪い姿勢"
               : root.stateKind === "paused" ? "一時停止"

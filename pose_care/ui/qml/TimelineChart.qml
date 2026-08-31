@@ -36,7 +36,7 @@ Item {
     clip: false
     activeFocusOnTab: hasData
     Accessible.role: Accessible.Chart
-    Accessible.name: "姿勢の推移。棒の高さは監視時間、色は良好と悪い姿勢の内訳です"
+    Accessible.name: "姿勢の推移。棒の高さは監視時間、色は良い姿勢と悪い姿勢の内訳です"
     Accessible.focusable: hasData
 
     function formatDuration(value) {
@@ -61,9 +61,9 @@ Item {
         var rate = total > 0 ? Math.round(good * 100 / total) + "%" : "—"
         return (bucket.detailLabel || bucket.label)
                 + "、監視 " + (bucket.monitoredText || formatDuration(total))
-                + "、良好 " + (bucket.goodText || formatDuration(good))
+                + "、良い姿勢 " + (bucket.goodText || formatDuration(good))
                 + "、悪い姿勢 " + (bucket.badText || formatDuration(bad))
-                + "、良好率 " + (bucket.ratioText || rate)
+                + "、良い姿勢の割合 " + (bucket.ratioText || rate)
     }
 
     function showPreviousBucket() {
@@ -286,7 +286,7 @@ Item {
                 spacing: 12
                 Text {
                     text: root.hoveredIndex >= 0
-                          ? "● 良好 " + (root.buckets[root.hoveredIndex].goodText
+                          ? "● 良い姿勢 " + (root.buckets[root.hoveredIndex].goodText
                                          || root.formatDuration(root.buckets[root.hoveredIndex].good)) : ""
                     color: "#8FE0BC"
                     font.family: root.theme.bodyFont
@@ -303,7 +303,7 @@ Item {
             }
             Text {
                 text: root.hoveredIndex >= 0
-                      ? "良好率  " + (root.buckets[root.hoveredIndex].ratioText || "—") : ""
+                      ? "良い姿勢の割合  " + (root.buckets[root.hoveredIndex].ratioText || "—") : ""
                 color: root.theme.inkOnAccent
                 font.family: root.theme.dataFont
                 font.pixelSize: 10

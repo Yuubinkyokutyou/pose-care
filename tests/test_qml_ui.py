@@ -685,9 +685,9 @@ Item {
     assert tooltip.property("visible") is True
     summary = tooltip.property("summaryText")
     assert "監視 3分" in summary
-    assert "良好 2分" in summary
+    assert "良い姿勢 2分" in summary
     assert "悪い姿勢 1分" in summary
-    assert "良好率 67%" in summary
+    assert "良い姿勢の割合 67%" in summary
     root.deleteLater()
 
 
@@ -776,6 +776,7 @@ def test_primary_ui_copy_is_plain_and_functional():
         "自分に合うように整える",
         "気づきの内訳",
         "声をかけるタイミング",
+        "良好",
     ):
         assert decorative_copy not in source
 

@@ -671,10 +671,10 @@ class PoseCareController(QObject):
         ratio = "—" if summary.good_ratio is None else f"{summary.good_ratio * 100:.0f}%"
         self._statistics_cards = [
             {
-                "label": "良好率",
+                "label": "良い姿勢",
                 "value": ratio,
-                "detail": f"良好 {self._format_duration(summary.good_seconds)}",
-                "help": "姿勢を判定できた時間のうち、良好または通知対象外だった時間の割合です。",
+                "detail": f"合計 {self._format_duration(summary.good_seconds)}",
+                "help": "判定できた時間のうち、良い姿勢または通知対象外だった時間の割合です。",
                 "tone": "signal",
             },
             {
@@ -1519,9 +1519,9 @@ class PoseCareController(QObject):
             )
             tooltip = f"PoseCare — 正常姿勢（{state.profile_name}）"
         elif state.kind == "good":
-            self._state_title = "良好"
+            self._state_title = "問題なし"
             self._state_detail = f"悪い姿勢との最高一致度 {state.similarity * 100:.0f}%"
-            tooltip = "PoseCare — 姿勢は安定しています"
+            tooltip = "PoseCare — 問題なし"
         elif state.kind == "warning":
             remaining = max(0.0, self.settings.hold_seconds * (1.0 - state.progress))
             self._state_title = "確認中"
