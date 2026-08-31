@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from PySide6.QtCore import (
@@ -170,11 +171,16 @@ class PoseCareController(QObject):
         self._state_progress = 0.0
         self._metrics = self._empty_metrics()
         self._statistics_period = "day"
+        self._statistics_anchor_date = self._local_date_at(time.time())
+        self._statistics_follow_today = True
+        self._statistics_range_label = ""
+        self._statistics_can_go_previous = False
+        self._statistics_can_go_next = False
         self._statistics_cards: list[dict[str, str]] = []
         self._timeline: list[dict[str, Any]] = []
         self._breakdown: list[dict[str, Any]] = []
-        self._statistics_note = "時間ごとの監視結果"
-        self._statistics_updated = "判定結果をこのPC内で集計します"
+        self._statistics_note = "時間別"
+        self._statistics_updated = ""
         self._save_feedback = ""
         self._save_feedback_error = False
         self._notification_feedback = ""
@@ -194,7 +200,7 @@ class PoseCareController(QObject):
         self._registration_progress = 0
         self._registration_phase = "ready"
         self._registration_seconds_remaining = RegistrationStabilityTracker.HOLD_SECONDS
-        self._registration_status = "準備できたら登録を開始してください"
+        self._registration_status = "登録を開始してください"
         self._registration_name = ""
         self._registration_tracker = RegistrationStabilityTracker()
 
@@ -257,6 +263,52 @@ class PoseCareController(QObject):
         if total_minutes >= 1:
             return f"{total_minutes}分"
         return f"{int(seconds)}秒"
+
+    @staticmethod
+    def _local_date_at(timestamp: float) -> date:
+        return datetime.fromtimestamp(timestamp).astimezone().date()
+
+    @staticmethod
+    def _format_statistics_range(period: str, anchor_date: date) -> str:
+        period_days = PostureHistory.PERIOD_DAYS[period]
+        started_on = anchor_date - timedelta(days=period_days - 1)
+        if started_on == anchor_date:
+            return f"{anchor_date.year}年{anchor_date.month}月{anchor_date.day}日"
+        if started_on.year != anchor_date.year:
+            return (
+                f"{started_on.year}年{started_on.month}月{started_on.day}日 – "
+                f"{anchor_date.year}年{anchor_date.month}月{anchor_date.day}日"
+            )
+        return (
+            f"{started_on.year}年{started_on.month}月{started_on.day}日 – "
+            f"{anchor_date.month}月{anchor_date.day}日"
+        )
+
+    @staticmethod
+    def _format_timeline_detail(
+        period: str,
+        started_at: float,
+        ended_at: float,
+    ) -> str:
+        started = datetime.fromtimestamp(started_at).astimezone()
+        if period == "day":
+            ended = datetime.fromtimestamp(ended_at).astimezone()
+            return (
+                f"{started.year}年{started.month}月{started.day}日 "
+                f"{started.hour:02d}:{started.minute:02d}–"
+                f"{ended.hour:02d}:{ended.minute:02d}"
+            )
+        weekdays = ("月", "火", "水", "木", "金", "土", "日")
+        return (
+            f"{started.year}年{started.month}月{started.day}日"
+            f"（{weekdays[started.weekday()]}）"
+        )
+
+    @staticmethod
+    def _oldest_statistics_anchor(period: str, current_date: date) -> date:
+        return current_date - timedelta(
+            days=PostureHistory.RETENTION_DAYS - PostureHistory.PERIOD_DAYS[period]
+        )
 
     def _get_camera_frame_source(self) -> str:
         return f"image://camera/frame/{self._frame_serial}"
@@ -323,7 +375,7 @@ class PoseCareController(QObject):
         for profile in self.settings.profiles:
             if profile.posture_type != posture_type:
                 continue
-            label = "正常姿勢・通知から除外" if posture_type == "normal" else "悪い姿勢・通知対象"
+            label = "通知しない姿勢" if posture_type == "normal" else "悪い姿勢・通知対象"
             if profile.feature_version == POSTURE_FEATURE_VERSION:
                 detail = f"{label}　上半身・{profile.sample_count}サンプルから登録"
             else:
@@ -370,6 +422,42 @@ class PoseCareController(QObject):
         return self._statistics_period
 
     statisticsPeriod = Property(str, _get_statistics_period, notify=statisticsChanged)
+
+    def _get_statistics_anchor_date(self) -> str:
+        return self._statistics_anchor_date.isoformat()
+
+    statisticsAnchorDate = Property(
+        str,
+        _get_statistics_anchor_date,
+        notify=statisticsChanged,
+    )
+
+    def _get_statistics_range_label(self) -> str:
+        return self._statistics_range_label
+
+    statisticsRangeLabel = Property(
+        str,
+        _get_statistics_range_label,
+        notify=statisticsChanged,
+    )
+
+    def _get_statistics_can_go_previous(self) -> bool:
+        return self._statistics_can_go_previous
+
+    statisticsCanGoPrevious = Property(
+        bool,
+        _get_statistics_can_go_previous,
+        notify=statisticsChanged,
+    )
+
+    def _get_statistics_can_go_next(self) -> bool:
+        return self._statistics_can_go_next
+
+    statisticsCanGoNext = Property(
+        bool,
+        _get_statistics_can_go_next,
+        notify=statisticsChanged,
+    )
 
     def _get_statistics_cards(self) -> list[dict[str, str]]:
         return self._statistics_cards
@@ -498,47 +586,145 @@ class PoseCareController(QObject):
         self._refresh_statistics()
 
     @Slot()
+    def showPreviousStatistics(self) -> None:
+        current_date = self._local_date_at(time.time())
+        oldest_anchor = self._oldest_statistics_anchor(
+            self._statistics_period,
+            current_date,
+        )
+        candidate = self._statistics_anchor_date - timedelta(
+            days=PostureHistory.PERIOD_DAYS[self._statistics_period]
+        )
+        self._statistics_anchor_date = max(oldest_anchor, candidate)
+        self._statistics_follow_today = False
+        self._refresh_statistics()
+
+    @Slot()
+    def showNextStatistics(self) -> None:
+        current_date = self._local_date_at(time.time())
+        period_days = PostureHistory.PERIOD_DAYS[self._statistics_period]
+        oldest_anchor = self._oldest_statistics_anchor(
+            self._statistics_period,
+            current_date,
+        )
+        step_days = period_days
+        if self._statistics_anchor_date == oldest_anchor:
+            partial_page_days = (current_date - oldest_anchor).days % period_days
+            step_days = partial_page_days or period_days
+        candidate = self._statistics_anchor_date + timedelta(days=step_days)
+        self._statistics_anchor_date = min(current_date, candidate)
+        self._statistics_follow_today = self._statistics_anchor_date == current_date
+        self._refresh_statistics()
+
+    @Slot()
+    def showTodayStatistics(self) -> None:
+        self._statistics_anchor_date = self._local_date_at(time.time())
+        self._statistics_follow_today = True
+        self._refresh_statistics()
+
+    @Slot(str)
+    def setStatisticsDate(self, iso_date: str) -> None:
+        try:
+            requested_date = date.fromisoformat(iso_date.strip())
+        except (AttributeError, TypeError, ValueError):
+            return
+        current_date = self._local_date_at(time.time())
+        self._statistics_anchor_date = PostureHistory.clamp_anchor_date(
+            self._statistics_period,
+            requested_date,
+            current_date,
+        )
+        self._statistics_follow_today = self._statistics_anchor_date == current_date
+        self._refresh_statistics()
+
+    @Slot()
     def refreshStatistics(self) -> None:
         self._refresh_statistics()
 
     def _refresh_statistics(self) -> None:
-        summary = self.history.summarize(self._statistics_period)
+        refreshed_at = time.time()
+        current_date = self._local_date_at(refreshed_at)
+        if self._statistics_follow_today:
+            self._statistics_anchor_date = current_date
+        self._statistics_anchor_date = PostureHistory.clamp_anchor_date(
+            self._statistics_period,
+            self._statistics_anchor_date,
+            current_date,
+        )
+        oldest_anchor = self._oldest_statistics_anchor(
+            self._statistics_period,
+            current_date,
+        )
+        self._statistics_range_label = self._format_statistics_range(
+            self._statistics_period,
+            self._statistics_anchor_date,
+        )
+        self._statistics_can_go_previous = (
+            self._statistics_anchor_date > oldest_anchor
+        )
+        self._statistics_can_go_next = self._statistics_anchor_date < current_date
+        summary = self.history.summarize(
+            self._statistics_period,
+            now=refreshed_at,
+            anchor_date=self._statistics_anchor_date,
+        )
         ratio = "—" if summary.good_ratio is None else f"{summary.good_ratio * 100:.0f}%"
         self._statistics_cards = [
             {
-                "label": "良好率",
+                "label": "良い姿勢",
                 "value": ratio,
-                "detail": f"良好 {self._format_duration(summary.good_seconds)}",
+                "detail": f"合計 {self._format_duration(summary.good_seconds)}",
+                "help": "判定できた時間のうち、良い姿勢または通知対象外だった時間の割合です。",
                 "tone": "signal",
             },
             {
                 "label": "監視できた時間",
                 "value": self._format_duration(summary.monitored_seconds),
-                "detail": "姿勢を判定できた時間",
+                "detail": "",
+                "help": "カメラで上半身を確認でき、姿勢を判定できた時間の合計です。",
                 "tone": "blue",
             },
             {
                 "label": "悪い姿勢",
                 "value": self._format_duration(summary.bad_seconds),
-                "detail": "確認中の時間も含みます",
+                "detail": "確認中を含む",
+                "help": "登録した悪い姿勢に近いと判定した時間です。通知前の確認時間も含みます。",
                 "tone": "danger",
             },
             {
                 "label": "姿勢通知",
                 "value": f"{summary.alert_count}回",
-                "detail": "実際に送った姿勢通知",
+                "detail": "",
+                "help": "選択した期間にWindowsへ送った姿勢通知の回数です。",
                 "tone": "amber",
             },
         ]
-        self._timeline = [
-            {
-                "label": bucket.label,
-                "good": bucket.good_seconds,
-                "bad": bucket.bad_seconds,
-                "capacity": bucket.capacity_seconds,
-            }
-            for bucket in summary.timeline
-        ]
+        self._timeline = []
+        for bucket in summary.timeline:
+            monitored = bucket.monitored_seconds
+            good_ratio = bucket.good_seconds / monitored if monitored > 0.0 else 0.0
+            self._timeline.append(
+                {
+                    "label": bucket.label,
+                    "detailLabel": self._format_timeline_detail(
+                        summary.period,
+                        bucket.started_at,
+                        bucket.ended_at,
+                    ),
+                    "startedAt": bucket.started_at,
+                    "endedAt": bucket.ended_at,
+                    "good": bucket.good_seconds,
+                    "bad": bucket.bad_seconds,
+                    "monitored": monitored,
+                    "capacity": bucket.capacity_seconds,
+                    "goodRatio": good_ratio,
+                    "hasData": monitored > 0.0,
+                    "goodText": self._format_duration(bucket.good_seconds),
+                    "badText": self._format_duration(bucket.bad_seconds),
+                    "monitoredText": self._format_duration(monitored),
+                    "ratioText": f"{good_ratio * 100:.0f}%" if monitored > 0.0 else "—",
+                }
+            )
         maximum = max((item.seconds for item in summary.bad_profiles[:5]), default=1.0)
         self._breakdown = [
             {
@@ -548,11 +734,9 @@ class PoseCareController(QObject):
             }
             for item in summary.bad_profiles[:5]
         ]
-        self._statistics_note = (
-            "時間ごとの監視結果" if summary.period == "day" else "日ごとの監視結果"
-        )
+        self._statistics_note = "時間別" if summary.period == "day" else "日別"
         self._statistics_updated = (
-            f"最終更新 {time.strftime('%H:%M')}　映像・骨格は保存しません"
+            f"更新 {time.strftime('%H:%M', time.localtime(refreshed_at))}"
         )
         self.statisticsChanged.emit()
 
@@ -615,7 +799,7 @@ class PoseCareController(QObject):
         self._registration_progress = 0
         self._registration_phase = "ready"
         self._registration_seconds_remaining = RegistrationStabilityTracker.HOLD_SECONDS
-        self._registration_status = "準備できたら登録を開始してください"
+        self._registration_status = "登録を開始してください"
         self._registration_tracker.reset()
         self.registrationChanged.emit()
 
@@ -665,12 +849,12 @@ class PoseCareController(QObject):
         )
         self._registration_seconds_remaining = state.seconds_remaining
         self._registration_status = {
-            "ready": "姿勢を整えたら、保持を始めてください",
-            "holding": "そのままキープ",
-            "moving": "動きを検知。止まると再開します",
+            "ready": "姿勢を3秒間保ってください",
+            "holding": "計測中",
+            "moving": "動きを検知しました。静止してください",
             "lost": "頭と両肩をカメラに入れてください",
-            "complete": "3秒間キープできました",
-        }.get(state.phase, "姿勢を整えてください")
+            "complete": "計測完了",
+        }.get(state.phase, "姿勢を確認してください")
 
     def _update_registration(self, feature: PoseFeature | None, now: float) -> None:
         if not self._registration_capturing:
@@ -1327,25 +1511,25 @@ class PoseCareController(QObject):
         self._state_progress = state.progress
         self.history.observe(state.kind, state.profile_name)
         if state.kind == "normal":
-            self._state_title = "登録した正常姿勢です"
+            self._state_title = "通知しない姿勢"
             self._state_detail = (
                 f"「{state.profile_name}」と {state.similarity * 100:.0f}% 一致・通知対象外"
             )
-            tooltip = f"PoseCare — 正常姿勢（{state.profile_name}）"
+            tooltip = f"PoseCare — 通知しない姿勢（{state.profile_name}）"
         elif state.kind == "good":
-            self._state_title = "姿勢は安定しています"
+            self._state_title = "問題なし"
             self._state_detail = f"悪い姿勢との最高一致度 {state.similarity * 100:.0f}%"
-            tooltip = "PoseCare — 姿勢は安定しています"
+            tooltip = "PoseCare — 問題なし"
         elif state.kind == "warning":
             remaining = max(0.0, self.settings.hold_seconds * (1.0 - state.progress))
-            self._state_title = "姿勢を確認しています"
+            self._state_title = "確認中"
             self._state_detail = (
                 f"「{state.profile_name}」と {state.similarity * 100:.0f}% 一致　"
                 f"あと {remaining:.1f} 秒"
             )
             tooltip = f"PoseCare — {state.profile_name}を確認中"
         elif state.kind == "bad":
-            self._state_title = "姿勢を戻しましょう"
+            self._state_title = "悪い姿勢"
             if state.cooldown_remaining > 0.0:
                 minutes, seconds = divmod(int(state.cooldown_remaining + 0.5), 60)
                 self._state_detail = (
@@ -1363,33 +1547,33 @@ class PoseCareController(QObject):
             self._state_detail = "頭と両肩が映る位置に座ってください"
             tooltip = "PoseCare — 姿勢を探しています"
         elif state.kind == "unconfigured":
-            self._state_title = "悪い姿勢を登録してください"
+            self._state_title = "姿勢未登録"
             self._state_detail = "上半身向けに、通知したい姿勢を登録してください"
             tooltip = "PoseCare — 初期設定が必要です"
         elif state.kind == "paused":
-            self._state_title = "監視を一時停止中"
+            self._state_title = "一時停止"
             self._state_detail = "再開するとカメラの姿勢判定が戻ります"
             tooltip = "PoseCare — 一時停止中"
         elif state.kind == "idle":
-            self._state_title = "カメラを自動停止中"
+            self._state_title = "カメラ停止"
             self._state_detail = "キーボードやマウスを操作すると自動で再開します"
             tooltip = "PoseCare — 無人・無操作のためカメラ停止中"
         elif state.kind == "locked":
-            self._state_title = "Windowsロック中はカメラを停止します"
+            self._state_title = "カメラ停止"
             self._state_detail = "ロックを解除すると自動で再開します"
             tooltip = "PoseCare — Windowsロックのためカメラ停止中"
         else:
-            self._state_title = "準備しています"
+            self._state_title = "準備中"
             self._state_detail = "カメラと姿勢モデルを起動しています"
             tooltip = "PoseCare — 起動中"
         self.tray.setToolTip(tooltip)
         self.uiChanged.emit()
 
     def _send_posture_notification(self, profile_name: str) -> None:
-        title = "姿勢を戻しましょう"
+        title = "姿勢を確認してください"
         message = (
             f"「{profile_name}」に近い状態が続いています。"
-            "肩の力を抜いて座り直しましょう。"
+            "座り直してください。"
         )
         self.history.record_alert(profile_name)
         if not self.notifier.send(

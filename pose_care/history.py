@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, time as datetime_time, timedelta, tzinfo
+from datetime import date, datetime, time as datetime_time, timedelta, tzinfo
 from pathlib import Path
 
 
@@ -18,6 +18,8 @@ class TimelineBucket:
     good_seconds: float
     bad_seconds: float
     capacity_seconds: float
+    started_at: float = 0.0
+    ended_at: float = 0.0
 
     @property
     def monitored_seconds(self) -> float:
@@ -59,6 +61,8 @@ class PostureHistory:
     MAX_OBSERVATION_GAP_SECONDS = 10.0
     OBSERVATION_GRACE_SECONDS = 2.0
     RETENTION_DAYS = 400
+    CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60.0
+    PERIOD_DAYS = {"day": 1, "week": 7, "month": 30}
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -96,7 +100,9 @@ class PostureHistory:
         self._last_observed_at = 0.0
         self._last_checkpoint_at = 0.0
         self._closed = False
-        self._delete_expired(time.time())
+        initialized_at = time.time()
+        self._delete_expired(initialized_at)
+        self._last_cleanup_at = initialized_at
 
     def observe(
         self,
@@ -154,13 +160,27 @@ class PostureHistory:
         *,
         now: float | None = None,
         timezone_info: tzinfo | None = None,
+        anchor_date: date | None = None,
     ) -> StatisticsSummary:
-        if period not in {"day", "week", "month"}:
+        if period not in self.PERIOD_DAYS:
             raise ValueError(f"未対応の集計期間です: {period}")
-        ended_at = time.time() if now is None else float(now)
-        self.checkpoint(timestamp=ended_at)
-        boundaries, labels = self._timeline_boundaries(period, ended_at, timezone_info)
+        checkpoint_at = time.time() if now is None else float(now)
+        self.checkpoint(timestamp=checkpoint_at)
+        self._delete_expired_if_due(checkpoint_at)
+        current = self._local_datetime(checkpoint_at, timezone_info)
+        selected_date = self.clamp_anchor_date(
+            period,
+            current.date() if anchor_date is None else anchor_date,
+            current.date(),
+        )
+        boundaries, labels = self._timeline_boundaries(
+            period,
+            checkpoint_at,
+            timezone_info,
+            anchor_date=selected_date,
+        )
         started_at = boundaries[0]
+        ended_at = min(checkpoint_at, boundaries[-1])
 
         rows = self._connection.execute(
             """
@@ -201,6 +221,8 @@ class PostureHistory:
                 good_seconds=good_by_bucket[index],
                 bad_seconds=bad_by_bucket[index],
                 capacity_seconds=max(1.0, min(boundaries[index + 1], ended_at) - boundaries[index]),
+                started_at=boundaries[index],
+                ended_at=boundaries[index + 1],
             )
             for index in range(len(labels))
         )
@@ -273,14 +295,53 @@ class PostureHistory:
         self._connection.execute("DELETE FROM posture_alerts WHERE occurred_at < ?", (cutoff,))
         self._connection.commit()
 
+    def _delete_expired_if_due(self, now: float) -> None:
+        if now - self._last_cleanup_at < self.CLEANUP_INTERVAL_SECONDS:
+            return
+        self._delete_expired(now)
+        self._last_cleanup_at = now
+
+    @staticmethod
+    def _local_datetime(timestamp: float, timezone_info: tzinfo | None) -> datetime:
+        if timezone_info is None:
+            return datetime.fromtimestamp(timestamp).astimezone()
+        return datetime.fromtimestamp(timestamp, tz=timezone_info)
+
+    @classmethod
+    def clamp_anchor_date(
+        cls,
+        period: str,
+        anchor_date: date,
+        current_date: date,
+    ) -> date:
+        if period not in cls.PERIOD_DAYS:
+            raise ValueError(f"未対応の集計期間です: {period}")
+        if isinstance(anchor_date, datetime):
+            anchor_date = anchor_date.date()
+        period_days = cls.PERIOD_DAYS[period]
+        oldest_anchor = current_date - timedelta(
+            days=cls.RETENTION_DAYS - period_days
+        )
+        return min(current_date, max(oldest_anchor, anchor_date))
+
     @staticmethod
     def _timeline_boundaries(
         period: str,
         now: float,
         timezone_info: tzinfo | None,
+        *,
+        anchor_date: date | None = None,
     ) -> tuple[list[float], list[str]]:
-        current = datetime.fromtimestamp(now, tz=timezone_info).astimezone() if timezone_info is None else datetime.fromtimestamp(now, tz=timezone_info)
-        midnight = datetime.combine(current.date(), datetime_time.min, tzinfo=current.tzinfo)
+        current = PostureHistory._local_datetime(now, timezone_info)
+        selected_date = current.date() if anchor_date is None else anchor_date
+        # A naive local datetime delegates conversion to the operating system,
+        # which preserves historical DST rules.  ``astimezone().tzinfo`` is a
+        # fixed offset on Windows and would shift past winter/summer anchors.
+        midnight = datetime.combine(
+            selected_date,
+            datetime_time.min,
+            tzinfo=None if timezone_info is None else current.tzinfo,
+        )
         if period == "day":
             starts = [midnight + timedelta(hours=index) for index in range(25)]
             labels = [f"{index:02d}" for index in range(24)]

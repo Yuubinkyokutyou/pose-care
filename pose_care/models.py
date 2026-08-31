@@ -30,7 +30,7 @@ class PostureProfile:
         normalized_type = "normal" if posture_type == "normal" else "bad"
         return cls(
             id=str(uuid4()),
-            name=name.strip() or ("正常姿勢" if normalized_type == "normal" else "悪い姿勢"),
+            name=name.strip() or ("通知しない姿勢" if normalized_type == "normal" else "悪い姿勢"),
             feature=[round(value, 7) for value in feature],
             created_at=datetime.now(timezone.utc).isoformat(),
             sample_count=sample_count,

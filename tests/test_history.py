@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import sqlite3
 
 import pytest
@@ -66,6 +66,117 @@ def test_week_and_month_use_daily_buckets(tmp_path):
     assert month.good_seconds == pytest.approx(3600.0)
     assert month.bad_seconds == pytest.approx(1800.0)
     history.close(timestamp=now)
+
+
+def test_past_anchor_uses_selected_window_but_checkpoints_at_now(tmp_path):
+    history = PostureHistory(tmp_path / "history.sqlite3")
+    selected_date = date(2026, 8, 20)
+    selected_start = utc_timestamp(2026, 8, 20)
+    monitored_start = selected_start + (10 * 3600)
+    observe_span(history, "good", monitored_start, monitored_start + 300)
+    history.observe("paused", timestamp=monitored_start + 300)
+
+    now = utc_timestamp(2026, 8, 31, 12)
+    history.observe("good", timestamp=now - 5)
+    history.observe("good", timestamp=now)
+
+    summary = history.summarize(
+        "day",
+        now=now,
+        timezone_info=timezone.utc,
+        anchor_date=selected_date,
+    )
+    week = history.summarize(
+        "week",
+        now=now,
+        timezone_info=timezone.utc,
+        anchor_date=selected_date,
+    )
+
+    assert summary.started_at == selected_start
+    assert summary.ended_at == selected_start + 86400
+    assert summary.good_seconds == pytest.approx(300.0)
+    assert summary.timeline[10].started_at == monitored_start
+    assert summary.timeline[10].ended_at == monitored_start + 3600
+    assert datetime.fromtimestamp(week.started_at, tz=timezone.utc).date() == (
+        selected_date - timedelta(days=6)
+    )
+    assert datetime.fromtimestamp(week.ended_at, tz=timezone.utc).date() == (
+        selected_date + timedelta(days=1)
+    )
+    active_ended_at = history._connection.execute(
+        "SELECT ended_at FROM posture_segments WHERE started_at = ?",
+        (now - 5,),
+    ).fetchone()[0]
+    assert active_ended_at == now
+    history.close(timestamp=now)
+
+
+def test_anchor_is_clamped_to_today_and_full_retention_windows(tmp_path):
+    history = PostureHistory(tmp_path / "history.sqlite3")
+    current_date = date(2026, 8, 31)
+    now = utc_timestamp(2026, 8, 31, 12)
+
+    future = history.summarize(
+        "day",
+        now=now,
+        timezone_info=timezone.utc,
+        anchor_date=current_date + timedelta(days=20),
+    )
+    oldest_day = history.summarize(
+        "day",
+        now=now,
+        timezone_info=timezone.utc,
+        anchor_date=current_date - timedelta(days=800),
+    )
+    oldest_month = history.summarize(
+        "month",
+        now=now,
+        timezone_info=timezone.utc,
+        anchor_date=current_date - timedelta(days=800),
+    )
+
+    expected_oldest = current_date - timedelta(days=history.RETENTION_DAYS - 1)
+    assert future.started_at == utc_timestamp(2026, 8, 31)
+    assert future.ended_at == now
+    assert datetime.fromtimestamp(oldest_day.started_at, tz=timezone.utc).date() == expected_oldest
+    assert datetime.fromtimestamp(oldest_month.started_at, tz=timezone.utc).date() == expected_oldest
+    assert len(oldest_month.timeline) == 30
+    history.close(timestamp=now)
+
+
+def test_long_running_history_prunes_expired_rows_during_summary(
+    tmp_path,
+    monkeypatch,
+):
+    initialized_at = utc_timestamp(2025, 1, 1)
+    monkeypatch.setattr("pose_care.history.time.time", lambda: initialized_at)
+    history = PostureHistory(tmp_path / "history.sqlite3")
+    history._connection.execute(
+        """
+        INSERT INTO posture_segments(started_at, ended_at, state, profile_name)
+        VALUES (?, ?, 'bad', '猫背')
+        """,
+        (initialized_at, initialized_at + 60),
+    )
+    history._connection.execute(
+        "INSERT INTO posture_alerts(occurred_at, profile_name) VALUES (?, '猫背')",
+        (initialized_at,),
+    )
+    history._connection.commit()
+
+    later = initialized_at + (401 * 86400)
+    history.summarize("day", now=later, timezone_info=timezone.utc)
+
+    segment_count = history._connection.execute(
+        "SELECT COUNT(*) FROM posture_segments"
+    ).fetchone()[0]
+    alert_count = history._connection.execute(
+        "SELECT COUNT(*) FROM posture_alerts"
+    ).fetchone()[0]
+    assert segment_count == 0
+    assert alert_count == 0
+    history.close(timestamp=later)
 
 
 def test_long_observation_gap_is_not_counted_as_monitoring(tmp_path):

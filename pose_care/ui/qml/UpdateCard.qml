@@ -8,7 +8,7 @@ Card {
 
     required property var updateController
 
-    implicitHeight: content.implicitHeight + 38
+    implicitHeight: content.implicitHeight + 40
 
     readonly property string updateState: updateController.updateState
     readonly property bool busy: updateState === "checking" || updateState === "downloading"
@@ -87,31 +87,25 @@ Card {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 19
-        spacing: 12
+        anchors.margins: 20
+        spacing: 14
 
         RowLayout {
             Layout.fillWidth: true
             spacing: 18
 
-            Column {
+            ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 3
 
                 Text {
-                    text: "アプリの更新"
+                    Layout.fillWidth: true
+                    text: "更新"
                     color: card.theme.text
                     font.family: card.theme.displayFont
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
-                }
-                Text {
-                    width: parent.width
-                    text: "GitHub Releasesから最新版を取得し、再起動して適用します。"
-                    color: card.theme.muted
-                    font.family: card.theme.bodyFont
-                    font.pixelSize: 10
-                    wrapMode: Text.WordWrap
+                    elide: Text.ElideRight
                 }
             }
 
@@ -137,39 +131,37 @@ Card {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 74
-            radius: 12
+            Layout.preferredHeight: 82
+            radius: 14
             color: card.theme.surfaceInset
+            border.width: 1
             border.color: card.theme.lineSoft
+            antialiasing: true
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                spacing: 12
+                anchors.leftMargin: 17
+                anchors.rightMargin: 17
+                spacing: 14
 
-                Rectangle {
-                    Layout.preferredWidth: 8
-                    Layout.preferredHeight: 8
-                    radius: 4
-                    color: card.theme.signal
-                }
+                ColumnLayout {
+                    Layout.preferredWidth: 160
+                    Layout.minimumWidth: 120
+                    spacing: 3
 
-                Column {
-                    Layout.preferredWidth: 180
-                    spacing: 2
                     Text {
-                        text: "THIS PC"
+                        Layout.fillWidth: true
+                        text: "現在のバージョン"
                         color: card.theme.muted
-                        font.family: card.theme.dataFont
-                        font.pixelSize: 8
-                        font.weight: Font.Bold
-                        font.letterSpacing: 1.1
+                        font.family: card.theme.bodyFont
+                        font.pixelSize: 9
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
                     }
                     Text {
                         id: currentVersionValue
                         objectName: "currentVersionValue"
-                        width: parent.width
+                        Layout.fillWidth: true
                         text: card.compactVersion(card.updateController.appVersion)
                         color: card.theme.text
                         font.family: card.theme.dataFont
@@ -181,43 +173,63 @@ Card {
                     }
                 }
 
-                Rectangle {
+                Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 1
-                    color: card.theme.line
+                    Layout.minimumWidth: 56
+                    Layout.preferredHeight: 26
 
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 1
+                        color: card.theme.line
+                    }
                     Rectangle {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         width: card.hasLatestVersion ? parent.width : 0
                         height: 2
+                        radius: 1
                         color: card.statusColor()
-
                     }
-
-                    Text {
+                    Rectangle {
+                        width: 24
+                        height: 24
+                        radius: 12
                         anchors.centerIn: parent
-                        text: "→"
-                        color: card.statusColor()
-                        font.family: card.theme.dataFont
-                        font.pixelSize: 14
+                        color: card.theme.surface
+                        border.width: 1
+                        border.color: card.theme.line
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "→"
+                            color: card.statusColor()
+                            font.family: card.theme.dataFont
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                        }
                     }
                 }
 
-                Column {
-                    Layout.preferredWidth: 180
-                    spacing: 2
+                ColumnLayout {
+                    Layout.preferredWidth: 160
+                    Layout.minimumWidth: 120
+                    spacing: 3
+
                     Text {
-                        text: "LATEST"
+                        Layout.fillWidth: true
+                        text: "利用できるバージョン"
                         color: card.theme.muted
-                        font.family: card.theme.dataFont
-                        font.pixelSize: 8
-                        font.weight: Font.Bold
-                        font.letterSpacing: 1.1
+                        font.family: card.theme.bodyFont
+                        font.pixelSize: 9
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
                     }
                     Text {
                         objectName: "latestVersionValue"
-                        width: parent.width
+                        Layout.fillWidth: true
                         text: card.hasLatestVersion
                               ? card.compactVersion(card.updateController.latestVersion)
                               : "未確認"
@@ -235,35 +247,48 @@ Card {
             }
         }
 
-        RowLayout {
+        Rectangle {
             Layout.fillWidth: true
-            spacing: 8
+            Layout.preferredHeight: 40
+            radius: 12
+            color: card.theme.surfaceInset
+            border.width: 1
+            border.color: card.updateState === "error"
+                          ? Qt.alpha(card.theme.danger, 0.30) : card.theme.lineSoft
 
-            Rectangle {
-                Layout.preferredWidth: 7
-                Layout.preferredHeight: 7
-                radius: 4
-                color: card.statusColor()
-            }
-            Text {
-                id: updateStatusText
-                objectName: "updateStatusText"
-                Layout.fillWidth: true
-                text: card.updateController.updateStatus.length > 0
-                      ? card.updateController.updateStatus
-                      : card.fallbackStatus()
-                color: card.updateState === "error" ? card.theme.danger : card.theme.muted
-                font.family: card.theme.bodyFont
-                font.pixelSize: 10
-                elide: Text.ElideRight
-                Accessible.name: text
-            }
-            Text {
-                visible: card.updateState === "downloading"
-                text: Math.round(card.updateController.updateProgress * 100) + "%"
-                color: card.theme.blue
-                font.family: card.theme.dataFont
-                font.pixelSize: 10
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 13
+                anchors.rightMargin: 13
+                spacing: 9
+
+                Rectangle {
+                    Layout.preferredWidth: 7
+                    Layout.preferredHeight: 7
+                    radius: width / 2
+                    color: card.statusColor()
+                }
+                Text {
+                    id: updateStatusText
+                    objectName: "updateStatusText"
+                    Layout.fillWidth: true
+                    text: card.updateController.updateStatus.length > 0
+                          ? card.updateController.updateStatus
+                          : card.fallbackStatus()
+                    color: card.updateState === "error" ? card.theme.danger : card.theme.muted
+                    font.family: card.theme.bodyFont
+                    font.pixelSize: 10
+                    elide: Text.ElideRight
+                    Accessible.name: text
+                }
+                Text {
+                    visible: card.updateState === "downloading"
+                    text: Math.round(card.updateController.updateProgress * 100) + "%"
+                    color: card.theme.blue
+                    font.family: card.theme.dataFont
+                    font.pixelSize: 10
+                    font.weight: Font.DemiBold
+                }
             }
         }
 
@@ -271,7 +296,7 @@ Card {
             id: updateProgressBar
             objectName: "updateProgressBar"
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? 5 : 0
+            Layout.preferredHeight: visible ? 6 : 0
             visible: card.updateState === "downloading"
             from: 0
             to: 1
@@ -280,12 +305,12 @@ Card {
             Accessible.name: "更新のダウンロード進捗"
 
             background: Rectangle {
-                implicitHeight: 5
+                implicitHeight: 6
                 radius: 3
                 color: card.theme.lineSoft
             }
             contentItem: Item {
-                implicitHeight: 5
+                implicitHeight: 6
                 Rectangle {
                     width: parent.width * updateProgressBar.visualPosition
                     height: parent.height

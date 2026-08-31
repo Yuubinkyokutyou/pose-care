@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
-from PySide6.QtCore import QObject, Property, QSize, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Property, QMetaObject, QSize, QUrl, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 from PySide6.QtWidgets import QApplication
@@ -576,9 +576,144 @@ def test_main_qml_loads_with_controller(tmp_path):
     startup_toggle = window.findChild(QObject, "startupToggle")
     assert startup_toggle is not None
     assert startup_toggle.property("checked") is False
+    timeline = window.findChild(QObject, "timelineChart")
+    previous_button = window.findChild(QObject, "statisticsPreviousButton")
+    next_button = window.findChild(QObject, "statisticsNextButton")
+    today_button = window.findChild(QObject, "statisticsTodayButton")
+    assert timeline is not None
+    assert previous_button.property("enabled") is True
+    assert next_button.property("enabled") is False
+    assert today_button.property("enabled") is False
+    breakdown_empty_title = window.findChild(QObject, "breakdownEmptyTitle")
+    assert breakdown_empty_title.property("text") == "記録なし"
+    previous_button.clicked.emit()
+    application.processEvents()
+    assert next_button.property("enabled") is True
+    assert today_button.property("enabled") is True
+
+    window.setWidth(960)
+    window.setHeight(660)
+    window.setProperty("currentPage", 0)
+    application.processEvents()
+    camera_card = window.findChild(QObject, "monitorCameraCard")
+    side_panel = window.findChild(QObject, "monitorSidePanel")
+    assert camera_card.property("width") >= 390
+    assert side_panel.property("width") >= 248
+
+    window.setProperty("currentPage", 1)
+    application.processEvents()
+    statistics_page = window.findChild(QObject, "statisticsPage")
+    statistics_detail = window.findChild(QObject, "statisticsDetailRow")
+    assert statistics_detail.property("y") + statistics_detail.property(
+        "height"
+    ) <= statistics_page.property("height")
+
+    window.setProperty("currentPage", 2)
+    window.show()
+    application.processEvents()
+    settings_flickable = window.findChild(QObject, "settingsFlickable")
+    assert settings_flickable.property("contentY") == 0
+    assert QMetaObject.invokeMethod(startup_toggle, "forceActiveFocus")
+    for _ in range(3):
+        application.processEvents()
+    assert settings_flickable.property("contentY") > 0
+    window.hide()
     controller.toggleMonitoring(False)
     assert not controller.monitoring
     controller.shutdown()
+
+
+def test_timeline_chart_exposes_hover_details():
+    application = _application()
+    engine = QQmlApplicationEngine()
+    component = QQmlComponent(engine)
+    qml_dir = Path(__file__).parents[1] / "pose_care" / "ui" / "qml"
+    component.setData(
+        """
+import QtQuick
+
+Item {
+    width: 620
+    height: 280
+
+    QtObject {
+        id: testTheme
+        property color surface: "#FBFDFC"
+        property color surfaceInset: "#F0F5F1"
+        property color lineSoft: "#DEE7E1"
+        property color text: "#17241C"
+        property color muted: "#5F6F66"
+        property color signal: "#1F7355"
+        property color danger: "#B94D49"
+        property color inkOnAccent: "#FFFFFF"
+        property string displayFont: "Yu Gothic UI"
+        property string bodyFont: "Yu Gothic UI"
+        property string dataFont: "Cascadia Mono"
+    }
+
+    TimelineChart {
+        anchors.fill: parent
+        theme: testTheme
+        buckets: [
+            {
+                label: "09",
+                detailLabel: "2026年8月31日 09:00–10:00",
+                good: 120,
+                bad: 60,
+                goodText: "2分",
+                badText: "1分",
+                monitoredText: "3分",
+                ratioText: "67%"
+            },
+            {
+                label: "10",
+                detailLabel: "2026年8月31日 10:00–11:00",
+                good: 0,
+                bad: 0
+            },
+            {
+                label: "11",
+                detailLabel: "2026年8月31日 11:00–12:00",
+                good: 60,
+                bad: 0,
+                goodText: "1分",
+                badText: "0秒",
+                monitoredText: "1分",
+                ratioText: "100%"
+            }
+        ]
+    }
+}
+""".encode("utf-8"),
+        QUrl.fromLocalFile(str(qml_dir / "TimelineChartHarness.qml")),
+    )
+    root = component.create()
+    assert root is not None, "\n".join(error.toString() for error in component.errors())
+
+    chart = root.findChild(QObject, "timelineChart")
+    tooltip = root.findChild(QObject, "timelineTooltip")
+    assert chart is not None
+    assert tooltip is not None
+    assert chart.property("activeFocusOnTab") is True
+    assert tooltip.property("visible") is False
+
+    chart.setProperty("hoveredIndex", 0)
+    application.processEvents()
+
+    assert tooltip.property("visible") is True
+    summary = tooltip.property("summaryText")
+    assert "監視 3分" in summary
+    assert "良い姿勢 2分" in summary
+    assert "悪い姿勢 1分" in summary
+    assert "良い姿勢の割合 67%" in summary
+
+    assert QMetaObject.invokeMethod(chart, "showNextBucket")
+    application.processEvents()
+    assert chart.property("hoveredIndex") == 2
+    assert QMetaObject.invokeMethod(chart, "showPreviousBucket")
+    application.processEvents()
+    assert chart.property("hoveredIndex") == 0
+    root.deleteLater()
 
 
 def test_registration_only_saves_after_three_stable_seconds(tmp_path, monkeypatch):
@@ -648,10 +783,33 @@ def test_registration_popup_exposes_live_stillness_ui_at_minimum_size(tmp_path):
     assert popup.property("width") <= 912
     assert popup.property("height") <= 624
     assert preview is not None
-    assert status.property("text") == "準備できたら登録を開始してください"
-    assert start_button.property("text") == "保持を始める"
+    assert status.property("text") == "登録を開始してください"
+    assert start_button.property("text") == "計測開始"
     assert start_button.property("enabled") is True
     controller.shutdown()
+
+
+def test_primary_ui_copy_is_plain_and_functional():
+    qml_dir = Path(__file__).parents[1] / "pose_care" / "ui" / "qml"
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in qml_dir.glob("*.qml")
+    )
+
+    for decorative_copy in (
+        "今日も、まっすぐ。",
+        "姿勢の小さな習慣",
+        "自分に合うように整える",
+        "気づきの内訳",
+        "声をかけるタイミング",
+        "良好",
+    ):
+        assert decorative_copy not in source
+
+    assert 'text: "モニター"' in source
+    assert 'text: "統計"' in source
+    assert 'text: "設定"' in source
+    assert "Accessible.role: Accessible.RadioButton" in source
+    assert "Accessible.checked: selected" in source
 
 
 def test_save_settings_updates_startup_registration(tmp_path):
@@ -702,7 +860,7 @@ def test_startup_registration_error_resyncs_settings_and_feedback(tmp_path):
     assert controller.saveFeedback == "スタートアップに登録できませんでした"
     feedback = window.findChild(QObject, "saveFeedbackText")
     assert feedback.property("text") == controller.saveFeedback
-    assert feedback.property("color").name() == "#ff737a"
+    assert feedback.property("color").name() == "#b94d49"
     controller.shutdown()
 
 
