@@ -10,6 +10,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $entryPoint = Join-Path $projectRoot "pose_care\__main__.py"
 $hookPath = Join-Path $projectRoot "scripts\pyinstaller_hooks"
+$manifestPath = Join-Path $projectRoot "scripts\pose-care.manifest"
 $buildPath = Join-Path $projectRoot "build"
 $distPath = Join-Path $projectRoot "dist"
 
@@ -29,6 +30,7 @@ try {
         --distpath $distPath `
         --workpath $buildPath `
         --specpath $projectRoot `
+        --manifest $manifestPath `
         --additional-hooks-dir $hookPath `
         --collect-binaries mediapipe `
         --collect-data pose_care `
