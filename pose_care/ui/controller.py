@@ -179,7 +179,7 @@ class PoseCareController(QObject):
         self._statistics_cards: list[dict[str, str]] = []
         self._timeline: list[dict[str, Any]] = []
         self._breakdown: list[dict[str, Any]] = []
-        self._statistics_note = "時間ごとの監視結果"
+        self._statistics_note = "時間別"
         self._statistics_updated = ""
         self._save_feedback = ""
         self._save_feedback_error = False
@@ -375,7 +375,7 @@ class PoseCareController(QObject):
         for profile in self.settings.profiles:
             if profile.posture_type != posture_type:
                 continue
-            label = "正常姿勢・通知から除外" if posture_type == "normal" else "悪い姿勢・通知対象"
+            label = "通知しない姿勢" if posture_type == "normal" else "悪い姿勢・通知対象"
             if profile.feature_version == POSTURE_FEATURE_VERSION:
                 detail = f"{label}　上半身・{profile.sample_count}サンプルから登録"
             else:
@@ -734,9 +734,7 @@ class PoseCareController(QObject):
             }
             for item in summary.bad_profiles[:5]
         ]
-        self._statistics_note = (
-            "時間ごとの監視結果" if summary.period == "day" else "日ごとの監視結果"
-        )
+        self._statistics_note = "時間別" if summary.period == "day" else "日別"
         self._statistics_updated = (
             f"更新 {time.strftime('%H:%M', time.localtime(refreshed_at))}"
         )
@@ -1513,11 +1511,11 @@ class PoseCareController(QObject):
         self._state_progress = state.progress
         self.history.observe(state.kind, state.profile_name)
         if state.kind == "normal":
-            self._state_title = "正常姿勢"
+            self._state_title = "通知しない姿勢"
             self._state_detail = (
                 f"「{state.profile_name}」と {state.similarity * 100:.0f}% 一致・通知対象外"
             )
-            tooltip = f"PoseCare — 正常姿勢（{state.profile_name}）"
+            tooltip = f"PoseCare — 通知しない姿勢（{state.profile_name}）"
         elif state.kind == "good":
             self._state_title = "問題なし"
             self._state_detail = f"悪い姿勢との最高一致度 {state.similarity * 100:.0f}%"

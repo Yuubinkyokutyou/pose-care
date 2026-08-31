@@ -39,7 +39,7 @@ Popup {
     }
 
     onOpened: {
-        profileName.text = controller.registrationType === "normal" ? "正常姿勢" : "猫背"
+        profileName.text = controller.registrationType === "normal" ? "通知しない姿勢" : "猫背"
         profileName.selectAll()
         profileName.forceActiveFocus()
     }
@@ -58,7 +58,7 @@ Popup {
                 spacing: 2
                 Text {
                     text: popup.controller.registrationType === "normal"
-                          ? "正常姿勢を登録"
+                          ? "通知しない姿勢を登録"
                           : "悪い姿勢を登録"
                     color: popup.theme.text
                     font.family: popup.theme.displayFont
@@ -159,7 +159,7 @@ Popup {
                 Text {
                     Layout.fillWidth: true
                     text: popup.controller.registrationType === "normal"
-                          ? "通知対象外にする姿勢を3秒間保ちます"
+                          ? "通知しない姿勢を3秒間保ちます"
                           : "通知対象にする姿勢を3秒間保ちます"
                     color: popup.theme.muted
                     font.family: popup.theme.bodyFont

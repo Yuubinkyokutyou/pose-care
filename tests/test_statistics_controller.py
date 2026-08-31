@@ -69,6 +69,7 @@ def test_statistics_date_navigation_and_bounds(tmp_path, monkeypatch):
     today = controller._local_date_at(fixed_now)
 
     assert controller.statisticsAnchorDate == today.isoformat()
+    assert controller.statisticsNote == "時間別"
     assert controller.statisticsRangeLabel == (
         f"{today.year}年{today.month}月{today.day}日"
     )
@@ -81,6 +82,7 @@ def test_statistics_date_navigation_and_bounds(tmp_path, monkeypatch):
     assert controller.statisticsCanGoNext
 
     controller.setStatisticsPeriod("week")
+    assert controller.statisticsNote == "日別"
     controller.showNextStatistics()
     selected += timedelta(days=7)
     assert controller.statisticsAnchorDate == selected.isoformat()
@@ -93,6 +95,7 @@ def test_statistics_date_navigation_and_bounds(tmp_path, monkeypatch):
     assert controller.statisticsAnchorDate == unchanged
 
     controller.setStatisticsPeriod("day")
+    assert controller.statisticsNote == "時間別"
     controller.setStatisticsDate((today + timedelta(days=20)).isoformat())
     assert controller.statisticsAnchorDate == today.isoformat()
     assert not controller.statisticsCanGoNext

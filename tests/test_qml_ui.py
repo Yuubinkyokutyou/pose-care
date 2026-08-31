@@ -654,16 +654,34 @@ Item {
     TimelineChart {
         anchors.fill: parent
         theme: testTheme
-        buckets: [{
-            label: "09",
-            detailLabel: "2026年8月31日 09:00–10:00",
-            good: 120,
-            bad: 60,
-            goodText: "2分",
-            badText: "1分",
-            monitoredText: "3分",
-            ratioText: "67%"
-        }]
+        buckets: [
+            {
+                label: "09",
+                detailLabel: "2026年8月31日 09:00–10:00",
+                good: 120,
+                bad: 60,
+                goodText: "2分",
+                badText: "1分",
+                monitoredText: "3分",
+                ratioText: "67%"
+            },
+            {
+                label: "10",
+                detailLabel: "2026年8月31日 10:00–11:00",
+                good: 0,
+                bad: 0
+            },
+            {
+                label: "11",
+                detailLabel: "2026年8月31日 11:00–12:00",
+                good: 60,
+                bad: 0,
+                goodText: "1分",
+                badText: "0秒",
+                monitoredText: "1分",
+                ratioText: "100%"
+            }
+        ]
     }
 }
 """.encode("utf-8"),
@@ -688,6 +706,13 @@ Item {
     assert "良い姿勢 2分" in summary
     assert "悪い姿勢 1分" in summary
     assert "良い姿勢の割合 67%" in summary
+
+    assert QMetaObject.invokeMethod(chart, "showNextBucket")
+    application.processEvents()
+    assert chart.property("hoveredIndex") == 2
+    assert QMetaObject.invokeMethod(chart, "showPreviousBucket")
+    application.processEvents()
+    assert chart.property("hoveredIndex") == 0
     root.deleteLater()
 
 
@@ -783,6 +808,8 @@ def test_primary_ui_copy_is_plain_and_functional():
     assert 'text: "モニター"' in source
     assert 'text: "統計"' in source
     assert 'text: "設定"' in source
+    assert "Accessible.role: Accessible.RadioButton" in source
+    assert "Accessible.checked: selected" in source
 
 
 def test_save_settings_updates_startup_registration(tmp_path):

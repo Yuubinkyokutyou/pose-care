@@ -87,6 +87,8 @@ Item {
                             text: modelData.label
                             quiet: true
                             selected: page.controller.statisticsPeriod === modelData.value
+                            Accessible.role: Accessible.RadioButton
+                            Accessible.checked: selected
                             Accessible.description: "統計の表示期間を" + modelData.label + "に切り替えます"
                             onClicked: page.controller.setStatisticsPeriod(modelData.value)
                         }
@@ -216,7 +218,7 @@ Item {
                             Layout.fillWidth: true
                             spacing: 2
                             Text {
-                                text: "時間別"
+                                text: page.controller.statisticsNote
                                 color: page.theme.text
                                 font.family: page.theme.displayFont
                                 font.pixelSize: 16

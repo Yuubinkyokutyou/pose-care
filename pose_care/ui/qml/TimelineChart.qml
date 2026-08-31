@@ -67,15 +67,25 @@ Item {
     }
 
     function showPreviousBucket() {
-        if (buckets.length === 0)
-            return
-        hoveredIndex = hoveredIndex <= 0 ? buckets.length - 1 : hoveredIndex - 1
+        hoveredIndex = dataBucketInDirection(-1)
     }
 
     function showNextBucket() {
-        if (buckets.length === 0)
-            return
-        hoveredIndex = hoveredIndex >= buckets.length - 1 ? 0 : hoveredIndex + 1
+        hoveredIndex = dataBucketInDirection(1)
+    }
+
+    function dataBucketInDirection(step) {
+        if (!hasData)
+            return -1
+        var index = hoveredIndex
+        if (index < 0)
+            index = step > 0 ? -1 : 0
+        for (var count = 0; count < buckets.length; ++count) {
+            index = (index + step + buckets.length) % buckets.length
+            if (Number(buckets[index].good) + Number(buckets[index].bad) > 0)
+                return index
+        }
+        return -1
     }
 
     function firstDataBucket() {

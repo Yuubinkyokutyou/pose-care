@@ -173,10 +173,10 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     theme: page.theme
                     profiles: page.controller.normalProfiles
-                    title: "通知対象外の姿勢"
-                    description: "検知しても通知しない姿勢"
+                    title: "通知しない姿勢"
+                    description: "検知しても通知しない"
                     emptyText: "登録なし"
-                    addLabel: "正常姿勢を追加"
+                    addLabel: "通知しない姿勢を追加"
                     accentColor: page.theme.signal
                     onAddRequested: page.controller.beginRegistration("normal", false)
                     onDeleteRequested: function(profileId, profileName) {
