@@ -52,3 +52,22 @@ def test_legacy_adjacent_update_workspace_is_removed():
 
     assert ".PoseCare.updates" not in updater
     assert ".PoseCare.updates" not in application
+
+
+def test_build_embeds_per_monitor_v2_dpi_manifest():
+    build_script = (PROJECT_ROOT / "scripts" / "build.ps1").read_text(
+        encoding="utf-8"
+    )
+    manifest = (PROJECT_ROOT / "scripts" / "pose-care.manifest").read_text(
+        encoding="utf-8"
+    )
+
+    assert '--manifest $manifestPath' in build_script
+    assert (
+        '<dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">'
+        "PerMonitorV2</dpiAwareness>"
+    ) in manifest
+    assert (
+        '<dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">'
+        "true/pm</dpiAware>"
+    ) in manifest

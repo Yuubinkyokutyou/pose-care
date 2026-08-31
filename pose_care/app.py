@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QTimer
+from PySide6.QtCore import QLockFile, Qt, QTimer
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -21,6 +21,35 @@ from pose_care.windows_session import WindowsSessionMonitor
 _UPDATE_READY_FILE_ENV = "POSE_CARE_UPDATE_READY_FILE"
 _UPDATE_READY_TOKEN_ENV = "POSE_CARE_UPDATE_READY_TOKEN"
 _UPDATE_EXPECTED_TAG_ENV = "POSE_CARE_UPDATE_EXPECTED_TAG"
+
+
+def _configure_windows_dpi_awareness() -> bool:
+    """Keep Qt's logical size and the native Windows window size in sync."""
+
+    if sys.platform != "win32":
+        return False
+
+    # DPI awareness must be selected before QApplication creates the first HWND.
+    # Prefer Per-Monitor V2 so Qt receives a resize when the window moves between
+    # monitors with different scale factors. The older APIs keep the app usable on
+    # Windows versions where the newest entry point is unavailable.
+    try:
+        per_monitor_v2 = ctypes.c_void_p(-4)
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(per_monitor_v2):
+            return True
+    except (AttributeError, OSError):
+        pass
+
+    try:
+        if ctypes.windll.shcore.SetProcessDpiAwareness(2) == 0:
+            return True
+    except (AttributeError, OSError):
+        pass
+
+    try:
+        return bool(ctypes.windll.user32.SetProcessDPIAware())
+    except (AttributeError, OSError):
+        return False
 
 
 def _configure_windows_identity() -> None:
@@ -85,8 +114,12 @@ def _signal_update_ready(release_tag: str) -> bool:
 
 
 def main() -> int:
+    _configure_windows_dpi_awareness()
     _configure_windows_identity()
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     application = QApplication(sys.argv)
     application.setApplicationName("PoseCare")
     application.setOrganizationName("PoseCare")
