@@ -10,84 +10,105 @@ Item {
                               : stateKind === "bad" ? theme.danger
                               : theme.muted
 
-    implicitWidth: 124
+    implicitWidth: 132
     implicitHeight: 150
 
     Rectangle {
-        id: rail
-        width: 3
-        height: 108
-        radius: 2
-        color: theme.line
+        id: signalPanel
+        width: 112
+        height: 116
+        radius: 16
+        color: root.theme.surfaceInset
+        border.width: 1
+        border.color: root.stateKind === "warning" || root.stateKind === "bad"
+                      ? Qt.alpha(root.stateColor, 0.38) : root.theme.lineSoft
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
-        anchors.topMargin: 19
+        antialiasing: true
 
         Rectangle {
-            width: parent.width
-            height: root.stateKind === "warning" ? parent.height * root.progress : parent.height
-            anchors.bottom: parent.bottom
+            id: rail
+            width: 4
+            height: 64
+            radius: 2
+            color: root.theme.line
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 30
+
+            Rectangle {
+                width: parent.width
+                height: root.stateKind === "warning" ? parent.height * root.progress : parent.height
+                anchors.bottom: parent.bottom
+                radius: 2
+                color: root.stateColor
+                opacity: root.stateKind === "starting" || root.stateKind === "paused"
+                         || root.stateKind === "idle" || root.stateKind === "locked" ? 0.42 : 1
+                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            }
+        }
+
+        Rectangle {
+            width: 15
+            height: 15
+            radius: width / 2
+            color: root.stateColor
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 14
+            opacity: root.stateKind === "starting" ? 0.54 : 1
+            scale: root.stateKind === "warning" ? 1.12 : 1.0
+            Behavior on scale {
+                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+            }
+        }
+
+        Rectangle {
+            width: 76
+            height: 3
             radius: 2
             color: root.stateColor
-            opacity: root.stateKind === "starting" || root.stateKind === "paused"
-                     || root.stateKind === "idle"
-                     || root.stateKind === "locked" ? 0.38 : 1
-            Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 55
+            opacity: 0.86
+            rotation: root.stateKind === "bad" ? -8 : root.stateKind === "warning" ? -3 : 0
+            Behavior on rotation { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        }
+
+        Rectangle {
+            width: 10
+            height: 10
+            radius: width / 2
+            color: root.stateColor
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 94
         }
     }
 
     Rectangle {
-        width: 14
-        height: 14
-        radius: 7
-        color: root.stateColor
+        id: stateBadge
+        width: stateLabel.implicitWidth + 24
+        height: 26
+        radius: 13
+        color: Qt.alpha(root.stateColor, 0.10)
+        border.width: 1
+        border.color: Qt.alpha(root.stateColor, 0.26)
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 10
-        opacity: root.stateKind === "starting" ? 0.5 : 1
-
-        SequentialAnimation on scale {
-            running: root.stateKind === "warning"
-            loops: Animation.Infinite
-            NumberAnimation { to: 1.35; duration: 520; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: 520; easing.type: Easing.InOutSine }
-        }
-    }
-
-    Rectangle {
-        width: 88
-        height: 2
-        radius: 1
-        color: root.stateColor
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 69
-        opacity: 0.85
-        rotation: root.stateKind === "bad" ? -8 : root.stateKind === "warning" ? -3 : 0
-        Behavior on rotation { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
-    }
-
-    Rectangle {
-        width: 9
-        height: 9
-        radius: 5
-        color: root.stateColor
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 122
+        anchors.bottom: parent.bottom
     }
 
     Text {
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        text: root.stateKind === "normal" ? "EXCLUDED"
-              : root.stateKind === "good" ? "ALIGNED"
-              : root.stateKind === "warning" ? "CHECKING"
-              : root.stateKind === "bad" ? "RESET"
-              : root.stateKind === "paused" ? "PAUSED"
+        id: stateLabel
+        anchors.centerIn: stateBadge
+        text: root.stateKind === "normal" ? "通知対象外"
+              : root.stateKind === "good" ? "良好"
+              : root.stateKind === "warning" ? "確認中"
+              : root.stateKind === "bad" ? "悪い姿勢"
+              : root.stateKind === "paused" ? "一時停止"
               : root.stateKind === "idle" || root.stateKind === "locked"
-              ? "CAMERA OFF" : "SCANNING"
+              ? "カメラ停止" : "解析中"
         color: root.stateColor
-        font.family: theme.dataFont
+        font.family: root.theme.bodyFont
         font.pixelSize: 10
-        font.weight: Font.Bold
-        font.letterSpacing: 1.4
+        font.weight: Font.DemiBold
     }
 }

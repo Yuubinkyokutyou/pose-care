@@ -5,16 +5,16 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QP
 
 
 COLORS = {
-    "canvas": "#08111E",
-    "surface": "#101D2C",
-    "surface_high": "#17283A",
-    "line": "#263A4D",
-    "text": "#EDF5F6",
-    "muted": "#91A6B8",
-    "signal": "#42D6BE",
-    "amber": "#F4B860",
-    "danger": "#FF6B6B",
-    "blue": "#60B8F4",
+    "canvas": "#EFF4F0",
+    "surface": "#FBFDFC",
+    "surface_high": "#EDF4EF",
+    "line": "#C9D7CE",
+    "text": "#17241C",
+    "muted": "#5F6F66",
+    "signal": "#1F7355",
+    "amber": "#9A6729",
+    "danger": "#B94D49",
+    "blue": "#3D7088",
 }
 
 
