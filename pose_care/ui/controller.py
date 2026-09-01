@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 from pose_care.camera import CameraWorker
 from pose_care.config import SettingsStore, history_path, model_path
 from pose_care.history import PostureHistory
+from pose_care.history_service import HistoryService
 from pose_care.models import (
     POSTURE_FEATURE_VERSION,
     AppSettings,
@@ -127,7 +128,7 @@ class PoseCareController(QObject):
         image_provider: CameraImageProvider,
         parent: QObject | None = None,
         *,
-        history: PostureHistory | None = None,
+        history: PostureHistory | HistoryService | None = None,
         notifier: WindowsNotifier | None = None,
         idle_seconds_provider: Callable[[], float] | None = None,
         updater: ApplicationUpdater | None = None,
@@ -142,7 +143,11 @@ class PoseCareController(QObject):
         self.detector = PostureDetector()
         self.notifier = notifier or WindowsNotifier()
         self._idle_seconds_provider = idle_seconds_provider or _seconds_since_last_user_input
-        self.history = history or PostureHistory(history_path())
+        self.history = history or HistoryService(history_path(), self)
+        self._statistics_request_id = 0
+        if isinstance(self.history, HistoryService):
+            self.history.summaryReady.connect(self._on_statistics_summary_ready)
+            self.history.historyError.connect(self._on_history_error)
         self.updater = updater or ApplicationUpdater()
         self.startup_registration = startup_registration or StartupRegistration()
         self.camera_worker: CameraWorker | None = None
@@ -663,11 +668,48 @@ class PoseCareController(QObject):
             self._statistics_anchor_date > oldest_anchor
         )
         self._statistics_can_go_next = self._statistics_anchor_date < current_date
+        if isinstance(self.history, HistoryService):
+            self._statistics_request_id = self.history.request_summary(
+                self._statistics_period,
+                now=refreshed_at,
+                anchor_date=self._statistics_anchor_date,
+            )
+            return
         summary = self.history.summarize(
             self._statistics_period,
             now=refreshed_at,
             anchor_date=self._statistics_anchor_date,
         )
+        self._apply_statistics_summary(summary, refreshed_at)
+
+    @Slot(int, object)
+    def _on_statistics_summary_ready(
+        self,
+        request_id: int,
+        summary: Any,
+    ) -> None:
+        if request_id != self._statistics_request_id or self._quitting:
+            return
+        self._apply_statistics_summary(summary, time.time())
+
+    @Slot(str, bool)
+    def _on_history_error(self, message: str, data_lost: bool) -> None:
+        logger.warning("History service stopped: %s", message)
+        tray = getattr(self, "tray", None)
+        if tray is None or not tray.isVisible():
+            return
+        tray.showMessage(
+            "PoseCare — 履歴保存エラー",
+            (
+                "一部の履歴を保存できませんでした。"
+                if data_lost
+                else "履歴を読み込めませんでした。自動的に再試行します。"
+            ),
+            QSystemTrayIcon.MessageIcon.Warning,
+            5000,
+        )
+
+    def _apply_statistics_summary(self, summary: Any, refreshed_at: float) -> None:
         ratio = "—" if summary.good_ratio is None else f"{summary.good_ratio * 100:.0f}%"
         self._statistics_cards = [
             {

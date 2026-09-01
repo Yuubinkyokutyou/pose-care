@@ -26,6 +26,7 @@ def test_summary_calculates_good_bad_profiles_and_alerts(tmp_path):
     observe_span(history, "warning", started_at + 600, started_at + 720, "猫背")
     observe_span(history, "bad", started_at + 720, started_at + 900, "猫背")
     history.record_alert("猫背", timestamp=started_at + 721)
+    history.record_alert("猫背", timestamp=started_at + 721)
     observe_span(history, "normal", started_at + 900, started_at + 1200, "普段の姿勢")
     history.observe("paused", timestamp=started_at + 1200)
 

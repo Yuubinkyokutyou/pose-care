@@ -121,15 +121,21 @@ class PostureHistory:
 
         gap = observed_at - self._last_observed_at
         if gap < 0.0 or gap > self.MAX_OBSERVATION_GAP_SECONDS:
-            self._finalize(min(
-                max(self._active_started_at, self._last_observed_at + self.OBSERVATION_GRACE_SECONDS),
-                observed_at,
-            ))
+            self._finalize(
+                min(
+                    max(
+                        self._active_started_at,
+                        self._last_observed_at + self.OBSERVATION_GRACE_SECONDS,
+                    ),
+                    observed_at,
+                ),
+                commit=False,
+            )
             self._begin(state, normalized_profile, observed_at)
             return
 
         if state != self._active_state or normalized_profile != self._active_profile:
-            self._finalize(observed_at)
+            self._finalize(observed_at, commit=False)
             self._begin(state, normalized_profile, observed_at)
             return
 
@@ -149,8 +155,15 @@ class PostureHistory:
             return
         occurred_at = time.time() if timestamp is None else float(timestamp)
         self._connection.execute(
-            "INSERT INTO posture_alerts(occurred_at, profile_name) VALUES (?, ?)",
-            (occurred_at, profile_name),
+            """
+            INSERT INTO posture_alerts(occurred_at, profile_name)
+            SELECT ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM posture_alerts
+                WHERE occurred_at = ? AND profile_name = ?
+            )
+            """,
+            (occurred_at, profile_name, occurred_at, profile_name),
         )
         self._connection.commit()
 
@@ -264,29 +277,31 @@ class PostureHistory:
         self._active_segment_id = int(cursor.lastrowid)
         self._connection.commit()
 
-    def _finalize(self, ended_at: float) -> None:
+    def _finalize(self, ended_at: float, *, commit: bool = True) -> None:
         if self._active_state is None:
             return
         if ended_at > self._active_started_at:
-            self._persist_active_end(ended_at)
+            self._persist_active_end(ended_at, commit=commit)
         elif self._active_segment_id is not None:
             self._connection.execute(
                 "DELETE FROM posture_segments WHERE id = ?",
                 (self._active_segment_id,),
             )
-            self._connection.commit()
+            if commit:
+                self._connection.commit()
         self._active_state = None
         self._active_profile = None
         self._active_segment_id = None
 
-    def _persist_active_end(self, ended_at: float) -> None:
+    def _persist_active_end(self, ended_at: float, *, commit: bool = True) -> None:
         if self._active_segment_id is None or ended_at <= self._last_checkpoint_at:
             return
         self._connection.execute(
             "UPDATE posture_segments SET ended_at = ? WHERE id = ?",
             (ended_at, self._active_segment_id),
         )
-        self._connection.commit()
+        if commit:
+            self._connection.commit()
         self._last_checkpoint_at = ended_at
 
     def _delete_expired(self, now: float) -> None:
