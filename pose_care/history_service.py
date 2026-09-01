@@ -12,7 +12,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from pose_care.history import PostureHistory
+from pose_care.history import BAD_STATES, GOOD_STATES, PostureHistory
 
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class HistoryService(QObject):
     historyError = Signal(str)
 
     STATE_STABILITY_SECONDS = 0.75
-    OBSERVATION_SAMPLE_SECONDS = 0.25
+    OBSERVATION_SAMPLE_SECONDS = 5.0
     MAX_PENDING_OBSERVATIONS = 256
     CLOSE_WAIT_SECONDS = 0.25
 
@@ -42,9 +42,14 @@ class HistoryService(QObject):
         self._commands: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self._observation_lock = threading.Lock()
         self._pending_observations: deque[tuple[str, str | None, float]] = deque(
-            maxlen=self.MAX_PENDING_OBSERVATIONS
         )
         self._observation_command_queued = False
+        self._producer_key: tuple[str, str | None] | None = None
+        self._producer_pending_key: tuple[str, str | None] | None = None
+        self._producer_pending_since = 0.0
+        self._producer_profile_key: tuple[str, str | None] | None = None
+        self._producer_profile_since = 0.0
+        self._observation_overflow_reported = False
         self._closing = threading.Event()
         self._closed = threading.Event()
         self._request_lock = threading.Lock()
@@ -69,22 +74,78 @@ class HistoryService(QObject):
         normalized_profile = (
             profile_name if state in ("normal", "warning", "bad") else None
         )
-        observation = (state, normalized_profile, observed_at)
+        key = (state, normalized_profile)
+        overflowed = False
         with self._observation_lock:
             if self._closing.is_set():
                 return
-            if (
-                self._pending_observations
-                and self._pending_observations[-1][:2] == observation[:2]
-                and observed_at - self._pending_observations[-1][2]
-                < self.OBSERVATION_SAMPLE_SECONDS
+            if self._producer_key is None:
+                self._producer_key = key
+                overflowed = self._buffer_observation(key, observed_at, force=True)
+            elif self._state_category(state) != self._state_category(
+                self._producer_key[0]
             ):
-                return
+                category = self._state_category(state)
+                if (
+                    self._producer_pending_key is None
+                    or self._state_category(self._producer_pending_key[0]) != category
+                ):
+                    self._producer_pending_since = observed_at
+                self._producer_pending_key = key
+                self._producer_profile_key = None
+                if (
+                    observed_at - self._producer_pending_since
+                    >= self.STATE_STABILITY_SECONDS
+                ):
+                    self._producer_key = key
+                    overflowed = self._buffer_observation(
+                        key,
+                        self._producer_pending_since,
+                        force=True,
+                    )
+                    overflowed = self._buffer_observation(
+                        key,
+                        observed_at,
+                        force=True,
+                    ) or overflowed
+                    self._producer_pending_key = None
+                    self._producer_pending_since = 0.0
+                else:
+                    overflowed = self._buffer_observation(
+                        self._producer_key,
+                        observed_at,
+                    )
             else:
-                self._pending_observations.append(observation)
-            if not self._observation_command_queued:
-                self._observation_command_queued = True
-                self._commands.put_nowait(("observations",))
+                self._producer_pending_key = None
+                self._producer_pending_since = 0.0
+                if key == self._producer_key:
+                    self._producer_profile_key = None
+                    self._producer_profile_since = 0.0
+                else:
+                    if key != self._producer_profile_key:
+                        self._producer_profile_key = key
+                        self._producer_profile_since = observed_at
+                    elif (
+                        observed_at - self._producer_profile_since
+                        >= self.STATE_STABILITY_SECONDS
+                    ):
+                        self._producer_key = key
+                        self._producer_profile_key = None
+                        self._producer_profile_since = 0.0
+                        overflowed = self._buffer_observation(
+                            key,
+                            observed_at,
+                            force=True,
+                        )
+                overflowed = self._buffer_observation(
+                    self._producer_key,
+                    observed_at,
+                ) or overflowed
+        if overflowed:
+            self._report_error(
+                "History observation buffer overflowed",
+                RuntimeError("一部の姿勢履歴を保存できませんでした"),
+            )
 
     def record_alert(
         self,
@@ -168,7 +229,10 @@ class HistoryService(QObject):
                                 break
                             except Exception as error:
                                 self._report_error("Could not store posture history", error)
-                                history = self._reopen_history(history)
+                                history = self._reopen_history(
+                                    history,
+                                    last_observed_at,
+                                )
                                 persisted_key = None
                                 pending_key = None
                                 pending_since = 0.0
@@ -185,7 +249,7 @@ class HistoryService(QObject):
                         history.record_alert(profile_name, timestamp=occurred_at)
                     except Exception as error:
                         self._report_error("Could not store posture alert", error)
-                        history = self._reopen_history(history)
+                        history = self._reopen_history(history, last_observed_at)
                         persisted_key = None
                         pending_key = None
                 elif operation == "summary":
@@ -219,7 +283,7 @@ class HistoryService(QObject):
                             self.summaryReady.emit(request_id, summary)
                     except Exception as error:
                         self._report_error("Could not summarize posture history", error)
-                        history = self._reopen_history(history)
+                        history = self._reopen_history(history, last_observed_at)
                         persisted_key = None
                         pending_key = None
                 elif operation == "close":
@@ -254,7 +318,43 @@ class HistoryService(QObject):
             observations = list(self._pending_observations)
             self._pending_observations.clear()
             self._observation_command_queued = False
+            self._observation_overflow_reported = False
         return observations
+
+    def _buffer_observation(
+        self,
+        key: tuple[str, str | None],
+        observed_at: float,
+        *,
+        force: bool = False,
+    ) -> bool:
+        if (
+            not force
+            and self._pending_observations
+            and self._pending_observations[-1][:2] == key
+            and observed_at - self._pending_observations[-1][2]
+            < self.OBSERVATION_SAMPLE_SECONDS
+        ):
+            return False
+        overflowed = False
+        if len(self._pending_observations) >= self.MAX_PENDING_OBSERVATIONS:
+            self._pending_observations.popleft()
+            if not self._observation_overflow_reported:
+                self._observation_overflow_reported = True
+                overflowed = True
+        self._pending_observations.append((key[0], key[1], observed_at))
+        if not self._observation_command_queued:
+            self._observation_command_queued = True
+            self._commands.put_nowait(("observations",))
+        return overflowed
+
+    @staticmethod
+    def _state_category(state: str) -> str:
+        if state in GOOD_STATES:
+            return "good"
+        if state in BAD_STATES:
+            return "bad"
+        return state
 
     def _apply_observation(
         self,
@@ -279,7 +379,7 @@ class HistoryService(QObject):
             history.observe(state, profile_name, timestamp=observed_at)
             return persisted_key, None, 0.0, observed_at
 
-        if state == persisted_key[0]:
+        if self._state_category(state) == self._state_category(persisted_key[0]):
             if key != pending_key:
                 pending_key = key
                 pending_since = observed_at
@@ -296,7 +396,11 @@ class HistoryService(QObject):
             )
             return persisted_key, pending_key, pending_since, observed_at
 
-        if pending_key is None or state != pending_key[0]:
+        if (
+            pending_key is None
+            or self._state_category(state)
+            != self._state_category(pending_key[0])
+        ):
             pending_since = observed_at
         pending_key = key
         if observed_at - pending_since < self.STATE_STABILITY_SECONDS:
@@ -318,9 +422,16 @@ class HistoryService(QObject):
             self._report_error("Could not open posture history", error)
         return None
 
-    def _reopen_history(self, history: PostureHistory) -> PostureHistory | None:
+    def _reopen_history(
+        self,
+        history: PostureHistory,
+        last_observed_at: float,
+    ) -> PostureHistory | None:
         try:
-            history.close()
+            if last_observed_at > 0.0:
+                history.close(timestamp=last_observed_at)
+            else:
+                history.close()
         except Exception:
             logger.exception("Could not close failed posture history connection")
         return self._open_history()
@@ -347,7 +458,8 @@ class HistoryService(QObject):
             return persisted_key, pending_key
         if (
             pending_key is not None
-            and pending_key[0] != persisted_key[0]
+            and self._state_category(pending_key[0])
+            != self._state_category(persisted_key[0])
             and last_observed_at - pending_since >= self.STATE_STABILITY_SECONDS
         ):
             history.observe(

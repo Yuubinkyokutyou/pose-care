@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 
+from pose_care.history import PostureHistory
 from pose_care.history_service import HistoryService
 
 
@@ -71,6 +72,31 @@ def test_profile_flicker_does_not_hide_stable_warning_state(tmp_path):
 
     assert durations["warning"] > 7.0
     assert durations["good"] < 1.0
+
+
+def test_state_flicker_within_good_category_does_not_hide_detection(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    service = HistoryService(path)
+    started_at = time.time()
+
+    service.observe("no_pose", timestamp=started_at)
+    for index in range(21):
+        service.observe(
+            "good" if index % 2 == 0 else "normal",
+            "デスク姿勢" if index % 2 else None,
+            timestamp=started_at + 0.1 + (index * 0.4),
+        )
+    service.close(timestamp=started_at + 8.5)
+
+    assert service._closed.wait(2.0)
+    with sqlite3.connect(path) as connection:
+        durations = dict(connection.execute(
+            "SELECT state, SUM(ended_at - started_at) FROM posture_segments GROUP BY state"
+        ).fetchall())
+
+    detected_seconds = durations.get("good", 0.0) + durations.get("normal", 0.0)
+    assert detected_seconds > 7.0
+    assert durations["no_pose"] < 1.0
 
 
 def test_history_service_calls_never_wait_for_blocked_storage(tmp_path):
@@ -154,6 +180,47 @@ def test_history_service_recovers_after_transient_storage_error(tmp_path):
     assert alerts == [("猫背", 3.0)]
 
 
+def test_recovery_does_not_overlap_old_and_queued_intervals(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    observed = threading.Event()
+    alert_entered = threading.Event()
+    release = threading.Event()
+
+    class AlertFailureHistory(PostureHistory):
+        should_fail = True
+
+        def observe(self, *args, **kwargs):
+            super().observe(*args, **kwargs)
+            observed.set()
+
+        def record_alert(self, *args, **kwargs):
+            if self.should_fail:
+                type(self).should_fail = False
+                alert_entered.set()
+                release.wait(2.0)
+                raise OSError("temporary alert failure")
+            super().record_alert(*args, **kwargs)
+
+    service = HistoryService(path, history_factory=AlertFailureHistory)
+    started_at = time.time()
+    service.observe("good", timestamp=started_at)
+    assert observed.wait(1.0)
+    service.record_alert("猫背", timestamp=started_at + 0.05)
+    assert alert_entered.wait(1.0)
+    for index in range(1, 7):
+        service.observe("good", timestamp=started_at + (index * 0.1))
+    release.set()
+    service.close(timestamp=started_at + 0.6)
+
+    assert service._closed.wait(2.0)
+    with sqlite3.connect(path) as connection:
+        stored_seconds = connection.execute(
+            "SELECT SUM(ended_at - started_at) FROM posture_segments WHERE state = 'good'"
+        ).fetchone()[0]
+
+    assert stored_seconds <= 0.61
+
+
 def test_pending_observations_are_bounded_while_storage_is_blocked(tmp_path):
     entered = threading.Event()
     release = threading.Event()
@@ -180,7 +247,7 @@ def test_pending_observations_are_bounded_while_storage_is_blocked(tmp_path):
     for index in range(100):
         service.observe("warning", timestamp=2.0 + (index * 0.1))
     with service._observation_lock:
-        assert len(service._pending_observations) >= 30
+        assert len(service._pending_observations) >= 2
 
     for index in range(5_000):
         service.observe(
@@ -195,3 +262,40 @@ def test_pending_observations_are_bounded_while_storage_is_blocked(tmp_path):
     release.set()
     service.close(timestamp=600.0)
     assert service._closed.wait(2.0)
+
+
+def test_long_storage_stall_preserves_compacted_continuous_time(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingOnceHistory(PostureHistory):
+        should_block = True
+
+        def observe(self, *args, **kwargs):
+            if self.should_block:
+                type(self).should_block = False
+                entered.set()
+                release.wait(2.0)
+            super().observe(*args, **kwargs)
+
+    service = HistoryService(path, history_factory=BlockingOnceHistory)
+    started_at = time.time()
+    service.observe("good", timestamp=started_at)
+    assert entered.wait(1.0)
+
+    for index in range(5_000):
+        service.observe(
+            "warning" if index % 2 else "good",
+            timestamp=started_at + 1.0 + (index * 0.1),
+        )
+
+    release.set()
+    service.close(timestamp=started_at + 501.0)
+    assert service._closed.wait(3.0)
+    with sqlite3.connect(path) as connection:
+        good_seconds = connection.execute(
+            "SELECT SUM(ended_at - started_at) FROM posture_segments WHERE state = 'good'"
+        ).fetchone()[0]
+
+    assert good_seconds > 495.0
