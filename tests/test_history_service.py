@@ -4,6 +4,8 @@ import sqlite3
 import threading
 import time
 
+from PySide6.QtCore import Qt
+
 from pose_care.history import PostureHistory
 from pose_care.history_service import HistoryService
 
@@ -375,3 +377,56 @@ def test_close_flushes_latest_compacted_observation(tmp_path):
         ).fetchone()[0]
 
     assert good_seconds > 4.8
+
+
+def test_persistent_storage_failure_emits_each_error_kind_once(tmp_path):
+    errors = []
+
+    class UnavailableHistory:
+        def __init__(self, _path):
+            raise OSError("database unavailable")
+
+    service = HistoryService(
+        tmp_path / "history.sqlite3",
+        history_factory=UnavailableHistory,
+    )
+    service.historyError.connect(
+        lambda message, data_lost: errors.append((message, data_lost)),
+        Qt.ConnectionType.DirectConnection,
+    )
+
+    for index in range(100):
+        service.observe("good", timestamp=time.time() + (index * 0.1))
+        time.sleep(0.002)
+    deadline = time.monotonic() + 2.0
+    while not errors and time.monotonic() < deadline:
+        time.sleep(0.01)
+    service.close()
+
+    data_loss_errors = [item for item in errors if item[1] is True]
+    assert len(data_loss_errors) == 1
+
+
+def test_summary_open_failure_is_reported_without_claiming_data_loss(tmp_path):
+    errors = []
+
+    class UnavailableHistory:
+        def __init__(self, _path):
+            raise OSError("database unavailable")
+
+    service = HistoryService(
+        tmp_path / "history.sqlite3",
+        history_factory=UnavailableHistory,
+    )
+    service.historyError.connect(
+        lambda message, data_lost: errors.append((message, data_lost)),
+        Qt.ConnectionType.DirectConnection,
+    )
+    service.request_summary("day")
+
+    deadline = time.monotonic() + 2.0
+    while not errors and time.monotonic() < deadline:
+        time.sleep(0.01)
+    service.close()
+
+    assert errors == [("履歴データベースを開けませんでした", False)]

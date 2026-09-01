@@ -51,6 +51,8 @@ class HistoryService(QObject):
         self._producer_profile_since = 0.0
         self._producer_latest_observed_at = 0.0
         self._observation_overflow_reported = False
+        self._error_state_lock = threading.Lock()
+        self._reported_error_kinds: set[bool] = set()
         self._closing = threading.Event()
         self._closed = threading.Event()
         self._request_lock = threading.Lock()
@@ -244,6 +246,7 @@ class HistoryService(QObject):
                                     timestamp=observed_at,
                                 )
                                 last_observed_at = observed_at
+                                self._mark_history_healthy()
                                 break
                             except Exception as error:
                                 self._log_error("Could not store posture history", error)
@@ -272,6 +275,7 @@ class HistoryService(QObject):
                             continue
                         try:
                             history.record_alert(profile_name, timestamp=occurred_at)
+                            self._mark_history_healthy()
                             break
                         except Exception as error:
                             self._log_error("Could not store posture alert", error)
@@ -295,6 +299,12 @@ class HistoryService(QObject):
                         if history is None:
                             history = self._open_history()
                         if history is None:
+                            if attempt == 1:
+                                self._report_error(
+                                    "Could not summarize posture history",
+                                    RuntimeError("履歴データベースを開けませんでした"),
+                                    data_lost=False,
+                                )
                             continue
                         try:
                             summary = history.summarize(
@@ -305,6 +315,7 @@ class HistoryService(QObject):
                             )
                             if not self._closing.is_set():
                                 self.summaryReady.emit(request_id, summary)
+                            self._mark_history_healthy()
                             break
                         except Exception as error:
                             self._log_error("Could not summarize posture history", error)
@@ -440,5 +451,14 @@ class HistoryService(QObject):
         data_lost: bool,
     ) -> None:
         self._log_error(context, error)
-        if not self._closing.is_set() or data_lost:
-            self.historyError.emit(str(error), data_lost)
+        if self._closing.is_set() and not data_lost:
+            return
+        with self._error_state_lock:
+            if data_lost in self._reported_error_kinds:
+                return
+            self._reported_error_kinds.add(data_lost)
+        self.historyError.emit(str(error), data_lost)
+
+    def _mark_history_healthy(self) -> None:
+        with self._error_state_lock:
+            self._reported_error_kinds.clear()
