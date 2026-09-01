@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, time as datetime_time, timedelta
 
 import pytest
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from pose_care.config import SettingsStore
 from pose_care.history import PostureHistory
+from pose_care.history_service import HistoryService
 from pose_care.models import AppSettings
 from pose_care.notifications import WindowsNotifier
 from pose_care.ui.controller import PoseCareController
@@ -43,6 +45,31 @@ def create_controller(tmp_path, history: PostureHistory) -> PoseCareController:
         notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
         startup_registration=FakeStartupRegistration(),
     )
+
+
+def test_default_history_updates_statistics_asynchronously(tmp_path, monkeypatch):
+    app = application()
+    monkeypatch.setattr(
+        "pose_care.ui.controller.history_path",
+        lambda: tmp_path / "history.sqlite3",
+    )
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(),
+        make_app_icon(),
+        CameraImageProvider(),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+
+    deadline = time.monotonic() + 2.0
+    while not controller.statisticsCards and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert isinstance(controller.history, HistoryService)
+    assert controller.statisticsCards
+    controller.shutdown()
 
 
 def observe_span(
