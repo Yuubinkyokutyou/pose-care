@@ -155,8 +155,15 @@ class PostureHistory:
             return
         occurred_at = time.time() if timestamp is None else float(timestamp)
         self._connection.execute(
-            "INSERT INTO posture_alerts(occurred_at, profile_name) VALUES (?, ?)",
-            (occurred_at, profile_name),
+            """
+            INSERT INTO posture_alerts(occurred_at, profile_name)
+            SELECT ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM posture_alerts
+                WHERE occurred_at = ? AND profile_name = ?
+            )
+            """,
+            (occurred_at, profile_name, occurred_at, profile_name),
         )
         self._connection.commit()
 

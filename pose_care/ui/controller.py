@@ -164,7 +164,6 @@ class PoseCareController(QObject):
         self._idle_camera_timeout_seconds = CAMERA_IDLE_TIMEOUT_SECONDS
         self._quitting = False
         self._history_closed = False
-        self._history_error_shown = False
         self._first_run_prompted = False
         self._tray_hint_shown = False
         self._frame_serial = 0
@@ -693,16 +692,19 @@ class PoseCareController(QObject):
             return
         self._apply_statistics_summary(summary, time.time())
 
-    @Slot(str)
-    def _on_history_error(self, message: str) -> None:
+    @Slot(str, bool)
+    def _on_history_error(self, message: str, data_lost: bool) -> None:
         logger.warning("History service stopped: %s", message)
         tray = getattr(self, "tray", None)
-        if self._history_error_shown or tray is None or not tray.isVisible():
+        if tray is None or not tray.isVisible():
             return
-        self._history_error_shown = True
         tray.showMessage(
             "PoseCare — 履歴保存エラー",
-            "履歴を一時的に保存できませんでした。自動的に再試行します。",
+            (
+                "一部の履歴を保存できませんでした。"
+                if data_lost
+                else "履歴を読み込めませんでした。自動的に再試行します。"
+            ),
             QSystemTrayIcon.MessageIcon.Warning,
             5000,
         )

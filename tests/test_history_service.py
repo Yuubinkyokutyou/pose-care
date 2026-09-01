@@ -74,6 +74,45 @@ def test_profile_flicker_does_not_hide_stable_warning_state(tmp_path):
     assert durations["good"] < 1.0
 
 
+def test_profile_change_keeps_its_duration_during_storage_stall(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingOnceHistory(PostureHistory):
+        should_block = True
+
+        def observe(self, *args, **kwargs):
+            if self.should_block:
+                type(self).should_block = False
+                entered.set()
+                release.wait(2.0)
+            super().observe(*args, **kwargs)
+
+    service = HistoryService(path, history_factory=BlockingOnceHistory)
+    started_at = time.time()
+    service.observe("warning", "姿勢A", timestamp=started_at)
+    assert entered.wait(1.0)
+    for index in range(1, 61):
+        service.observe(
+            "warning",
+            "姿勢B",
+            timestamp=started_at + (index * 0.1),
+        )
+    release.set()
+    service.close(timestamp=started_at + 6.0)
+
+    assert service._closed.wait(3.0)
+    with sqlite3.connect(path) as connection:
+        durations = dict(connection.execute(
+            "SELECT profile_name, SUM(ended_at - started_at) "
+            "FROM posture_segments GROUP BY profile_name"
+        ).fetchall())
+
+    assert durations["姿勢A"] < 1.0
+    assert durations["姿勢B"] > 5.0
+
+
 def test_state_flicker_within_good_category_does_not_hide_detection(tmp_path):
     path = tmp_path / "history.sqlite3"
     service = HistoryService(path)
@@ -217,8 +256,12 @@ def test_recovery_does_not_overlap_old_and_queued_intervals(tmp_path):
         stored_seconds = connection.execute(
             "SELECT SUM(ended_at - started_at) FROM posture_segments WHERE state = 'good'"
         ).fetchone()[0]
+        alert_count = connection.execute(
+            "SELECT COUNT(*) FROM posture_alerts"
+        ).fetchone()[0]
 
     assert stored_seconds <= 0.61
+    assert alert_count == 1
 
 
 def test_pending_observations_are_bounded_while_storage_is_blocked(tmp_path):
@@ -299,3 +342,36 @@ def test_long_storage_stall_preserves_compacted_continuous_time(tmp_path):
         ).fetchone()[0]
 
     assert good_seconds > 495.0
+
+
+def test_close_flushes_latest_compacted_observation(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingOnceHistory(PostureHistory):
+        should_block = True
+
+        def observe(self, *args, **kwargs):
+            if self.should_block:
+                type(self).should_block = False
+                entered.set()
+                release.wait(2.0)
+            super().observe(*args, **kwargs)
+
+    service = HistoryService(path, history_factory=BlockingOnceHistory)
+    started_at = time.time()
+    service.observe("good", timestamp=started_at)
+    assert entered.wait(1.0)
+    for index in range(1, 50):
+        service.observe("good", timestamp=started_at + (index * 0.1))
+    release.set()
+    service.close(timestamp=started_at + 4.9)
+
+    assert service._closed.wait(3.0)
+    with sqlite3.connect(path) as connection:
+        good_seconds = connection.execute(
+            "SELECT SUM(ended_at - started_at) FROM posture_segments WHERE state = 'good'"
+        ).fetchone()[0]
+
+    assert good_seconds > 4.8

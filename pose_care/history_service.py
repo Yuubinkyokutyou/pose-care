@@ -22,7 +22,7 @@ class HistoryService(QObject):
     """Run SQLite history work away from Qt's GUI thread."""
 
     summaryReady = Signal(int, object)
-    historyError = Signal(str)
+    historyError = Signal(str, bool)
 
     STATE_STABILITY_SECONDS = 0.75
     OBSERVATION_SAMPLE_SECONDS = 5.0
@@ -49,6 +49,7 @@ class HistoryService(QObject):
         self._producer_pending_since = 0.0
         self._producer_profile_key: tuple[str, str | None] | None = None
         self._producer_profile_since = 0.0
+        self._producer_latest_observed_at = 0.0
         self._observation_overflow_reported = False
         self._closing = threading.Event()
         self._closed = threading.Event()
@@ -79,6 +80,7 @@ class HistoryService(QObject):
         with self._observation_lock:
             if self._closing.is_set():
                 return
+            self._producer_latest_observed_at = observed_at
             if self._producer_key is None:
                 self._producer_key = key
                 overflowed = self._buffer_observation(key, observed_at, force=True)
@@ -129,14 +131,20 @@ class HistoryService(QObject):
                         observed_at - self._producer_profile_since
                         >= self.STATE_STABILITY_SECONDS
                     ):
+                        profile_started_at = self._producer_profile_since
                         self._producer_key = key
                         self._producer_profile_key = None
                         self._producer_profile_since = 0.0
                         overflowed = self._buffer_observation(
                             key,
-                            observed_at,
+                            profile_started_at,
                             force=True,
                         )
+                        overflowed = self._buffer_observation(
+                            key,
+                            observed_at,
+                            force=True,
+                        ) or overflowed
                 overflowed = self._buffer_observation(
                     self._producer_key,
                     observed_at,
@@ -145,6 +153,7 @@ class HistoryService(QObject):
             self._report_error(
                 "History observation buffer overflowed",
                 RuntimeError("一部の姿勢履歴を保存できませんでした"),
+                data_lost=True,
             )
 
     def record_alert(
@@ -172,6 +181,13 @@ class HistoryService(QObject):
         if self._closing.is_set():
             return request_id
         requested_at = time.time() if now is None else float(now)
+        overflowed = self._force_latest_observation()
+        if overflowed:
+            self._report_error(
+                "History observation buffer overflowed",
+                RuntimeError("一部の姿勢履歴を保存できませんでした"),
+                data_lost=True,
+            )
         self._commands.put_nowait(
             (
                 "summary",
@@ -189,6 +205,13 @@ class HistoryService(QObject):
             return
         self._closing.set()
         closed_at = time.time() if timestamp is None else float(timestamp)
+        overflowed = self._force_latest_observation()
+        if overflowed:
+            self._report_error(
+                "History observation buffer overflowed",
+                RuntimeError("一部の姿勢履歴を保存できませんでした"),
+                data_lost=True,
+            )
         self._commands.put_nowait(("close", closed_at))
         # Give normal shutdown a brief chance to flush, but never let storage
         # or a Windows volume operation make the GUI appear hung.
@@ -196,9 +219,6 @@ class HistoryService(QObject):
 
     def _run(self) -> None:
         history = self._open_history()
-        persisted_key: tuple[str, str | None] | None = None
-        pending_key: tuple[str, str | None] | None = None
-        pending_since = 0.0
         last_observed_at = 0.0
         try:
             while True:
@@ -210,48 +230,58 @@ class HistoryService(QObject):
                             if history is None:
                                 history = self._open_history()
                             if history is None:
-                                break
+                                if attempt == 1:
+                                    self._report_error(
+                                        "Could not store posture history",
+                                        RuntimeError("履歴データベースを開けませんでした"),
+                                        data_lost=True,
+                                    )
+                                continue
                             try:
-                                (
-                                    persisted_key,
-                                    pending_key,
-                                    pending_since,
-                                    last_observed_at,
-                                ) = self._apply_observation(
-                                    history,
-                                    persisted_key,
-                                    pending_key,
-                                    pending_since,
+                                history.observe(
                                     state,
                                     profile_name,
-                                    observed_at,
+                                    timestamp=observed_at,
                                 )
+                                last_observed_at = observed_at
                                 break
                             except Exception as error:
-                                self._report_error("Could not store posture history", error)
+                                self._log_error("Could not store posture history", error)
                                 history = self._reopen_history(
                                     history,
                                     last_observed_at,
                                 )
-                                persisted_key = None
-                                pending_key = None
-                                pending_since = 0.0
-                                last_observed_at = 0.0
                                 if attempt == 1:
-                                    break
+                                    self._report_error(
+                                        "Posture history observation was lost",
+                                        error,
+                                        data_lost=True,
+                                    )
                 elif operation == "alert":
                     _, profile_name, occurred_at = command
-                    if history is None:
-                        history = self._open_history()
-                    if history is None:
-                        continue
-                    try:
-                        history.record_alert(profile_name, timestamp=occurred_at)
-                    except Exception as error:
-                        self._report_error("Could not store posture alert", error)
-                        history = self._reopen_history(history, last_observed_at)
-                        persisted_key = None
-                        pending_key = None
+                    for attempt in range(2):
+                        if history is None:
+                            history = self._open_history()
+                        if history is None:
+                            if attempt == 1:
+                                self._report_error(
+                                    "Posture alert was lost",
+                                    RuntimeError("履歴データベースを開けませんでした"),
+                                    data_lost=True,
+                                )
+                            continue
+                        try:
+                            history.record_alert(profile_name, timestamp=occurred_at)
+                            break
+                        except Exception as error:
+                            self._log_error("Could not store posture alert", error)
+                            history = self._reopen_history(history, last_observed_at)
+                            if attempt == 1:
+                                self._report_error(
+                                    "Posture alert was lost",
+                                    error,
+                                    data_lost=True,
+                                )
                 elif operation == "summary":
                     (
                         _,
@@ -261,49 +291,49 @@ class HistoryService(QObject):
                         timezone_info,
                         anchor_date,
                     ) = command
-                    if history is None:
-                        history = self._open_history()
-                    if history is None:
-                        continue
-                    try:
-                        persisted_key, pending_key = self._flush_pending(
-                            history,
-                            persisted_key,
-                            pending_key,
-                            pending_since,
-                            last_observed_at,
-                        )
-                        summary = history.summarize(
-                            period,
-                            now=requested_at,
-                            timezone_info=timezone_info,
-                            anchor_date=anchor_date,
-                        )
-                        if not self._closing.is_set():
-                            self.summaryReady.emit(request_id, summary)
-                    except Exception as error:
-                        self._report_error("Could not summarize posture history", error)
-                        history = self._reopen_history(history, last_observed_at)
-                        persisted_key = None
-                        pending_key = None
+                    for attempt in range(2):
+                        if history is None:
+                            history = self._open_history()
+                        if history is None:
+                            continue
+                        try:
+                            summary = history.summarize(
+                                period,
+                                now=requested_at,
+                                timezone_info=timezone_info,
+                                anchor_date=anchor_date,
+                            )
+                            if not self._closing.is_set():
+                                self.summaryReady.emit(request_id, summary)
+                            break
+                        except Exception as error:
+                            self._log_error("Could not summarize posture history", error)
+                            history = self._reopen_history(history, last_observed_at)
+                            if attempt == 1:
+                                self._report_error(
+                                    "Could not summarize posture history",
+                                    error,
+                                    data_lost=False,
+                                )
                 elif operation == "close":
                     _, closed_at = command
                     if history is not None:
                         try:
-                            self._flush_pending(
-                                history,
-                                persisted_key,
-                                pending_key,
-                                pending_since,
-                                last_observed_at,
-                            )
                             history.close(timestamp=closed_at)
                         except Exception as error:
-                            self._report_error("Could not close posture history", error)
+                            self._report_error(
+                                "Could not close posture history",
+                                error,
+                                data_lost=True,
+                            )
                     history = None
                     return
         except Exception as error:
-            self._report_error("History worker stopped unexpectedly", error)
+            self._report_error(
+                "History worker stopped unexpectedly",
+                error,
+                data_lost=True,
+            )
         finally:
             if history is not None:
                 try:
@@ -320,6 +350,16 @@ class HistoryService(QObject):
             self._observation_command_queued = False
             self._observation_overflow_reported = False
         return observations
+
+    def _force_latest_observation(self) -> bool:
+        with self._observation_lock:
+            if self._producer_key is None or self._producer_latest_observed_at <= 0.0:
+                return False
+            return self._buffer_observation(
+                self._producer_key,
+                self._producer_latest_observed_at,
+                force=True,
+            )
 
     def _buffer_observation(
         self,
@@ -356,59 +396,6 @@ class HistoryService(QObject):
             return "bad"
         return state
 
-    def _apply_observation(
-        self,
-        history: PostureHistory,
-        persisted_key: tuple[str, str | None] | None,
-        pending_key: tuple[str, str | None] | None,
-        pending_since: float,
-        state: str,
-        profile_name: str | None,
-        observed_at: float,
-    ) -> tuple[
-        tuple[str, str | None] | None,
-        tuple[str, str | None] | None,
-        float,
-        float,
-    ]:
-        key = (state, profile_name)
-        if persisted_key is None:
-            history.observe(state, profile_name, timestamp=observed_at)
-            return key, None, 0.0, observed_at
-        if key == persisted_key:
-            history.observe(state, profile_name, timestamp=observed_at)
-            return persisted_key, None, 0.0, observed_at
-
-        if self._state_category(state) == self._state_category(persisted_key[0]):
-            if key != pending_key:
-                pending_key = key
-                pending_since = observed_at
-            if observed_at - pending_since >= self.STATE_STABILITY_SECONDS:
-                # The posture category is unchanged, so keep it current while
-                # only the best-matching profile settles. Attribute the short
-                # debounce interval to the previous profile.
-                history.observe(state, profile_name, timestamp=observed_at)
-                return key, None, 0.0, observed_at
-            history.observe(
-                persisted_key[0],
-                persisted_key[1],
-                timestamp=observed_at,
-            )
-            return persisted_key, pending_key, pending_since, observed_at
-
-        if (
-            pending_key is None
-            or self._state_category(state)
-            != self._state_category(pending_key[0])
-        ):
-            pending_since = observed_at
-        pending_key = key
-        if observed_at - pending_since < self.STATE_STABILITY_SECONDS:
-            return persisted_key, pending_key, pending_since, observed_at
-        history.observe(state, profile_name, timestamp=pending_since)
-        history.observe(state, profile_name, timestamp=observed_at)
-        return key, None, 0.0, observed_at
-
     def _open_history(self) -> PostureHistory | None:
         error: Exception | None = None
         for delay in (0.0, 0.1):
@@ -419,7 +406,7 @@ class HistoryService(QObject):
             except Exception as current_error:
                 error = current_error
         if error is not None:
-            self._report_error("Could not open posture history", error)
+            self._log_error("Could not open posture history", error)
         return None
 
     def _reopen_history(
@@ -436,46 +423,22 @@ class HistoryService(QObject):
             logger.exception("Could not close failed posture history connection")
         return self._open_history()
 
-    def _report_error(self, context: str, error: Exception) -> None:
+    @staticmethod
+    def _log_error(context: str, error: Exception) -> None:
         logger.error(
             "%s: %s",
             context,
             error,
             exc_info=(type(error), error, error.__traceback__),
         )
-        if not self._closing.is_set():
-            self.historyError.emit(str(error))
 
-    def _flush_pending(
+    def _report_error(
         self,
-        history: PostureHistory,
-        persisted_key: tuple[str, str | None] | None,
-        pending_key: tuple[str, str | None] | None,
-        pending_since: float,
-        last_observed_at: float,
-    ) -> tuple[tuple[str, str | None] | None, tuple[str, str | None] | None]:
-        if persisted_key is None or last_observed_at <= 0.0:
-            return persisted_key, pending_key
-        if (
-            pending_key is not None
-            and self._state_category(pending_key[0])
-            != self._state_category(persisted_key[0])
-            and last_observed_at - pending_since >= self.STATE_STABILITY_SECONDS
-        ):
-            history.observe(
-                pending_key[0],
-                pending_key[1],
-                timestamp=pending_since,
-            )
-            history.observe(
-                pending_key[0],
-                pending_key[1],
-                timestamp=last_observed_at,
-            )
-            return pending_key, None
-        history.observe(
-            persisted_key[0],
-            persisted_key[1],
-            timestamp=last_observed_at,
-        )
-        return persisted_key, pending_key
+        context: str,
+        error: Exception,
+        *,
+        data_lost: bool,
+    ) -> None:
+        self._log_error(context, error)
+        if not self._closing.is_set() or data_lost:
+            self.historyError.emit(str(error), data_lost)
