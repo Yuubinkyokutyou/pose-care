@@ -37,6 +37,7 @@ OutputBaseFilename=PoseCareSetup-windows-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\pose_care\assets\pose-care.ico
 CloseApplications=yes
 CloseApplicationsFilter=PoseCare.exe
 RestartApplications=no

@@ -35,7 +35,7 @@ pose-care = "pose_care.app:main"
 include = ["pose_care*"]
 
 [tool.setuptools.package-data]
-pose_care = ["ui/qml/*.qml"]
+pose_care = ["ui/qml/*.qml", "assets/*.png", "assets/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

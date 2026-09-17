@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from pathlib import Path
+
+from PySide6.QtGui import QFont, QIcon
 
 
 COLORS = {
@@ -18,26 +19,9 @@ COLORS = {
 }
 
 
-def make_app_icon(size: int = 64) -> QIcon:
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor(COLORS["surface_high"]))
-    painter.setPen(QPen(QColor(COLORS["signal"]), max(2, size // 18)))
-    painter.drawRoundedRect(4, 4, size - 8, size - 8, size * 0.25, size * 0.25)
-    painter.setPen(QPen(QColor(COLORS["text"]), max(2, size // 16), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    center = size // 2
-    painter.drawLine(center, int(size * 0.26), center, int(size * 0.70))
-    painter.drawEllipse(center - size // 14, int(size * 0.18), size // 7, size // 7)
-    painter.setPen(QPen(QColor(COLORS["signal"]), max(2, size // 18), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    path = QPainterPath()
-    path.moveTo(size * 0.27, size * 0.43)
-    path.cubicTo(size * 0.39, size * 0.36, size * 0.42, size * 0.49, center, size * 0.47)
-    path.cubicTo(size * 0.58, size * 0.45, size * 0.63, size * 0.36, size * 0.74, size * 0.43)
-    painter.drawPath(path)
-    painter.end()
-    return QIcon(pixmap)
+def make_app_icon() -> QIcon:
+    """Load the same multi-resolution artwork used by the Windows executable."""
+    return QIcon(str(Path(__file__).parents[1] / "assets" / "pose-care.ico"))
 
 
 def configure_font(application) -> None:
