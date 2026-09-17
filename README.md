@@ -5,6 +5,8 @@ PCカメラで上半身の姿勢を監視し、登録した悪い姿勢が続い
 画面はPySide6 + Qt Quick/QMLで構築し、カメラはWindows MediaCaptureの
 `SharedReadOnly` モード、姿勢判定はMediaPipeで処理しています。
 
+仕様・判定の流れ・技術選定の理由は、[技術概要（図解）](docs/README.md)にまとめています。
+
 ## 主な機能
 
 - MediaPipe Pose Landmarkerによる端末内の上半身姿勢推定
