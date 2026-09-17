@@ -12,6 +12,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from pose_care.backup import export_backup
 from pose_care.history import BAD_STATES, GOOD_STATES, PostureHistory
 
 
@@ -23,6 +24,7 @@ class HistoryService(QObject):
 
     summaryReady = Signal(int, object)
     historyError = Signal(str, bool)
+    exportFinished = Signal(str, str)
 
     STATE_STABILITY_SECONDS = 0.75
     OBSERVATION_SAMPLE_SECONDS = 5.0
@@ -202,6 +204,17 @@ class HistoryService(QObject):
         )
         return request_id
 
+    def request_export(self, destination: Path, settings_json: str) -> None:
+        if self._closing.is_set():
+            raise RuntimeError("履歴の保存処理は終了しています")
+        if self._force_latest_observation():
+            self._report_error(
+                "History observation buffer overflowed",
+                RuntimeError("一部の姿勢履歴を保存できませんでした"),
+                data_lost=True,
+            )
+        self._commands.put_nowait(("export", destination, settings_json))
+
     def close(self, *, timestamp: float | None = None) -> None:
         if self._closing.is_set():
             return
@@ -326,6 +339,19 @@ class HistoryService(QObject):
                                     error,
                                     data_lost=False,
                                 )
+                elif operation == "export":
+                    _, destination, settings_json = command
+                    try:
+                        if history is None:
+                            history = self._open_history()
+                        if history is None:
+                            raise RuntimeError("履歴データベースを開けませんでした")
+                        export_backup(history, settings_json, destination)
+                    except Exception as error:
+                        self._log_error("Could not export backup", error)
+                        self.exportFinished.emit(str(destination), str(error))
+                    else:
+                        self.exportFinished.emit(str(destination), "")
                 elif operation == "close":
                     _, closed_at = command
                     if history is not None:

@@ -150,6 +150,19 @@ class PostureHistory:
         safe_end = min(checkpoint_at, self._last_observed_at + self.OBSERVATION_GRACE_SECONDS)
         self._persist_active_end(safe_end)
 
+    def backup(self, destination: Path) -> None:
+        """Include the active interval and WAL in a standalone SQLite snapshot."""
+        if self._closed:
+            raise RuntimeError("履歴データベースは終了しています")
+        self.checkpoint()
+        self._connection.commit()
+        connection = sqlite3.connect(destination)
+        try:
+            self._connection.backup(connection)
+            connection.execute("PRAGMA journal_mode=DELETE")
+        finally:
+            connection.close()
+
     def record_alert(self, profile_name: str, *, timestamp: float | None = None) -> None:
         if self._closed:
             return
