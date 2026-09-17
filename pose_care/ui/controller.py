@@ -25,6 +25,7 @@ from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from pose_care.camera import CameraWorker
+from pose_care.bone_game import BoneGame
 from pose_care.backup import export_backup
 from pose_care.config import SettingsStore, history_path, model_path
 from pose_care.history import PostureHistory
@@ -144,6 +145,7 @@ class PoseCareController(QObject):
         self.settings = settings
         self.icon = icon
         self.image_provider = image_provider
+        self._bone_game = BoneGame(self)
         self.notificationActivated.connect(self.show_from_tray)
         self.detector = PostureDetector()
         self.notifier = notifier or WindowsNotifier()
@@ -233,6 +235,8 @@ class PoseCareController(QObject):
         self._camera_retry_timer.timeout.connect(self._retry_camera_after_idle)
         self._build_tray()
         self._refresh_statistics()
+
+    boneGame = Property(QObject, lambda self: self._bone_game, constant=True)
 
     def start(self) -> None:
         self._last_person_seen_at = time.monotonic()
@@ -1271,6 +1275,7 @@ class PoseCareController(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._quitting = True
+        self._bone_game.reset()
         self._update_shutdown.set()
         self._discard_prepared_update()
         self._statistics_timer.stop()
@@ -1329,6 +1334,8 @@ class PoseCareController(QObject):
         self.camera_worker.request_stop()
 
     def _stop_camera(self, *, wait: bool = False) -> None:
+        self._bone_game.reset()
+        self._bone_game.set_pose([])
         self._camera_start_pending = False
         worker = self.camera_worker
         if worker is None:
@@ -1479,6 +1486,8 @@ class PoseCareController(QObject):
         if self._window is None or not self._window.isVisible():
             return
         self.image_provider.set_image(image)
+        self._bone_game.frame_width = image.width()
+        self._bone_game.frame_height = image.height()
         self._frame_serial += 1
         self.frameChanged.emit()
 
@@ -1487,6 +1496,7 @@ class PoseCareController(QObject):
             return
         self.latest_feature = feature
         self.latest_landmarks = landmarks
+        self._bone_game.set_pose(landmarks)
         self._update_registration(feature, time.monotonic())
         if landmarks:
             self._last_person_seen_at = time.monotonic()
