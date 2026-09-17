@@ -626,6 +626,81 @@ def test_main_qml_loads_with_controller(tmp_path):
     controller.shutdown()
 
 
+def test_bone_game_clicks_render_and_clean_up(tmp_path):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtTest import QTest
+    from pose_care.bone_game import Bone
+
+    application = _application()
+    provider = CameraImageProvider()
+    frame = QImage(1280, 720, QImage.Format.Format_RGB888)
+    frame.fill(0xFF203D35)
+    provider.set_image(frame)
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"), AppSettings(), make_app_icon(), provider,
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+    engine = QQmlApplicationEngine()
+    warnings = []
+    engine.warnings.connect(lambda messages: warnings.extend(str(m) for m in messages))
+    engine.addImageProvider("camera", provider)
+    engine.rootContext().setContextProperty("controller", controller)
+    engine.load(Path(__file__).parents[1] / "pose_care/ui/qml/Main.qml")
+    window = engine.rootObjects()[0]
+    controller.attach_window(window)
+    window.show()
+    controller._on_frame(frame)
+    pose = [(0.5, 0.3, 0, 1)] * 33
+    pose[11], pose[13], pose[15] = (0.35, 0.55, 0, 1), (0.25, 0.4, 0, 1), (0.35, 0.2, 0, 1)
+    pose[12], pose[14], pose[16] = (0.65, 0.55, 0, 1), (0.75, 0.4, 0, 1), (0.65, 0.2, 0, 1)
+    controller._on_pose(None, pose)
+    QTest.qWait(80)
+    overlay = window.findChild(QObject, "boneGameOverlay")
+    assert overlay.property("canPlay")
+    point = overlay.mapToScene(QPointF(150, 150)).toPoint()
+    game = controller.boneGame
+    for _ in range(2):
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=point)
+    assert game.state == "idle"
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=point)
+    assert game.state == "intro"
+    game.timer.stop()
+    game.phase = "playing"
+    game.elapsed = 28.5
+    game.bones = [Bone(100, 160, 0, 0, 20), Bone(300, 250, 0, 0, 110, True)]
+    game.changed.emit()
+    QTest.qWait(60)
+    assert overlay.property("active")
+    nose_heart = window.findChild(QObject, "boneGameNoseHeart")
+    assert nose_heart.property("visible")
+    nose = game.nosePosition
+    assert abs(nose_heart.property("x") + nose_heart.property("width") / 2 - nose["x"]) < 0.01
+    assert abs(nose_heart.property("y") + nose_heart.property("height") / 2 - nose["y"]) < 0.01
+    assert window.grabWindow().save(str(tmp_path / "bone-game.png"))
+    game.phase = "result"
+    game.changed.emit()
+    application.processEvents()
+    assert window.findChild(QObject, "boneGameResult").property("visible")
+    assert not nose_heart.property("visible")
+    QTest.qWait(60)
+    assert window.grabWindow().save(str(tmp_path / "bone-game-result.png"))
+    window.setProperty("currentPage", 1)
+    application.processEvents()
+    assert game.state == "idle" and not game.bones and not game.timer.isActive()
+    window.setProperty("currentPage", 0)
+    application.processEvents()
+    for _ in range(3):
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=point)
+    assert game.state == "intro"
+    window.hide()
+    application.processEvents()
+    assert game.state == "idle" and not game.timer.isActive()
+    controller.shutdown()
+    assert not warnings
+
+
 def test_timeline_chart_exposes_hover_details():
     application = _application()
     engine = QQmlApplicationEngine()

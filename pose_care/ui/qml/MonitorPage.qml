@@ -234,6 +234,16 @@ Item {
                     font.family: page.theme.dataFont
                     font.pixelSize: 9
                 }
+
+                BoneGameOverlay {
+                    anchors.fill: cameraImage
+                    game: page.controller.boneGame
+                    theme: page.theme
+                    available: page.controller.monitoring
+                               && page.controller.cameraErrorText.length === 0
+                               && cameraImage.status === Image.Ready
+                               && !page.controller.registrationOpen
+                }
             }
 
             ColumnLayout {
