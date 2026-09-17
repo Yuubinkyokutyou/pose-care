@@ -32,31 +32,14 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 10
 
-            Item {
+            Image {
                 Layout.preferredWidth: 29
                 Layout.preferredHeight: 44
-
-                Rectangle {
-                    width: 2
-                    height: 36
-                    radius: 1
-                    color: rail.theme.signal
-                    anchors.centerIn: parent
-                }
-                Repeater {
-                    model: [8, 20, 32]
-                    Rectangle {
-                        required property int modelData
-                        width: modelData === 20 ? 9 : 6
-                        height: width
-                        radius: width / 2
-                        color: modelData === 20 ? rail.theme.surface : rail.theme.signal
-                        border.width: modelData === 20 ? 2 : 0
-                        border.color: rail.theme.signal
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: modelData - height / 2
-                    }
-                }
+                source: "../../assets/pose-care.png"
+                sourceSize.width: 58
+                sourceSize.height: 58
+                fillMode: Image.PreserveAspectFit
+                smooth: true
             }
 
             Column {
