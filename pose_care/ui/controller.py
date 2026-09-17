@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import sys
 import threading
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
@@ -14,6 +16,7 @@ from PySide6.QtCore import (
     QCoreApplication,
     QObject,
     QTimer,
+    QUrl,
     Qt,
     Signal,
     Slot,
@@ -22,6 +25,7 @@ from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from pose_care.camera import CameraWorker
+from pose_care.backup import export_backup
 from pose_care.config import SettingsStore, history_path, model_path
 from pose_care.history import PostureHistory
 from pose_care.history_service import HistoryService
@@ -114,6 +118,7 @@ class PoseCareController(QObject):
     registrationChanged = Signal()
     feedbackChanged = Signal()
     updateChanged = Signal()
+    exportChanged = Signal()
     navigateRequested = Signal(int)
     notificationActivated = Signal()
     _updateTaskFinished = Signal(str, object)
@@ -148,6 +153,9 @@ class PoseCareController(QObject):
         if isinstance(self.history, HistoryService):
             self.history.summaryReady.connect(self._on_statistics_summary_ready)
             self.history.historyError.connect(self._on_history_error)
+            self.history.exportFinished.connect(self._on_export_finished)
+        self._export_busy = False
+        self._export_status = ""
         self.updater = updater or ApplicationUpdater()
         self.startup_registration = startup_registration or StartupRegistration()
         self.camera_worker: CameraWorker | None = None
@@ -781,6 +789,44 @@ class PoseCareController(QObject):
             f"更新 {time.strftime('%H:%M', time.localtime(refreshed_at))}"
         )
         self.statisticsChanged.emit()
+
+    exportBusy = Property(bool, lambda self: self._export_busy, notify=exportChanged)
+    exportStatus = Property(str, lambda self: self._export_status, notify=exportChanged)
+
+    @Slot(QUrl)
+    def exportData(self, destination_url: QUrl) -> None:
+        if self._export_busy or self._quitting or destination_url.isEmpty():
+            return
+        try:
+            if not destination_url.isLocalFile():
+                raise ValueError("ローカルの保存先を選択してください")
+            destination = Path(destination_url.toLocalFile())
+            if destination.suffix.lower() != ".zip":
+                raise ValueError("保存先には.zipファイルを指定してください")
+            if destination.resolve() in (self.store.path.resolve(), self.history.path.resolve()):
+                raise ValueError("使用中の設定・履歴には上書きできません")
+            settings_json = json.dumps(self.settings.to_dict(), ensure_ascii=False, indent=2) + "\n"
+            self._export_busy = True
+            self._export_status = "エクスポート中です。完了するまでアプリを終了しないでください。"
+            self.exportChanged.emit()
+            if isinstance(self.history, HistoryService):
+                self.history.request_export(destination, settings_json)
+            else:
+                # Synchronous histories are injected by tests/embedded callers;
+                # production uses the existing history worker and its connection.
+                export_backup(self.history, settings_json, destination)
+                self._on_export_finished(str(destination), "")
+        except Exception as error:
+            self._on_export_finished("", str(error))
+
+    @Slot(str, str)
+    def _on_export_finished(self, destination: str, error: str) -> None:
+        self._export_busy = False
+        self._export_status = (
+            f"エクスポートできませんでした: {error}"
+            if error else f"保存しました: {destination}"
+        )
+        self.exportChanged.emit()
 
     @Slot(int, float, int, bool, int, bool, bool)
     def saveSettings(

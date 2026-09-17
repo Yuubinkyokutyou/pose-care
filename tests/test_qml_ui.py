@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import time
+import zipfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 
 from pose_care.config import SettingsStore
 from pose_care.history import PostureHistory
+from pose_care.history_service import HistoryService
 from pose_care.models import AppSettings, PoseFeature
 from pose_care.notifications import WindowsNotifier
 from pose_care.startup import StartupRegistration, StartupRegistrationError
@@ -810,6 +813,54 @@ def test_primary_ui_copy_is_plain_and_functional():
     assert 'text: "設定"' in source
     assert "Accessible.role: Accessible.RadioButton" in source
     assert "Accessible.checked: selected" in source
+
+
+def test_settings_export_dialog_creates_backup_and_updates_feedback(tmp_path):
+    application = _application()
+    service = HistoryService(tmp_path / "history.sqlite3")
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"),
+        AppSettings(), make_app_icon(), CameraImageProvider(),
+        history=service,
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("controller", controller)
+    engine.load(Path(__file__).parents[1] / "pose_care" / "ui" / "qml" / "Main.qml")
+    window = engine.rootObjects()[0]
+    dialog = window.findChild(QObject, "exportDialog")
+    button = window.findChild(QObject, "exportDataButton")
+    feedback = window.findChild(QObject, "exportStatusText")
+    try:
+        # Canceling the dialog creates no backup and leaves feedback alone.
+        assert QMetaObject.invokeMethod(dialog, "rejected")
+        assert controller.exportStatus == ""
+        destination = tmp_path / "移行用 データ.zip"
+        assert dialog.setProperty("selectedFile", QUrl.fromLocalFile(str(destination)))
+        assert QMetaObject.invokeMethod(dialog, "accepted")
+        assert controller.exportBusy
+        application.processEvents()
+        deadline = time.monotonic() + 5
+        while controller.exportBusy and time.monotonic() < deadline:
+            application.processEvents()
+            time.sleep(0.01)
+        assert not controller.exportBusy
+        assert zipfile.is_zipfile(destination)
+        assert "保存しました" in feedback.property("text")
+        assert button.property("enabled")
+
+        controller.exportData(QUrl.fromLocalFile(str(tmp_path / "missing" / "backup.zip")))
+        deadline = time.monotonic() + 5
+        while controller.exportBusy and time.monotonic() < deadline:
+            application.processEvents()
+            time.sleep(0.01)
+        assert not controller.exportBusy
+        assert "エクスポートできませんでした" in feedback.property("text")
+        assert button.property("enabled")
+    finally:
+        controller.shutdown()
+        assert service._closed.wait(5)
 
 
 def test_save_settings_updates_startup_registration(tmp_path):

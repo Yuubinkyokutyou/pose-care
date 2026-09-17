@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Dialogs
 
 Item {
     id: page
@@ -23,6 +24,16 @@ Item {
     readonly property int gridColumns: settingsScroll.availableWidth >= 820 ? 2 : 1
     property alias scrollFlickable: settingsFlickable
     property alias settingsContent: settingsGrid
+
+    FileDialog {
+        id: exportDialog
+        objectName: "exportDialog"
+        title: "移行用データを保存"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PoseCare バックアップ (*.zip)"]
+        defaultSuffix: "zip"
+        onAccepted: page.controller.exportData(selectedFile)
+    }
 
     function isDescendantOf(item, ancestor) {
         var current = item
@@ -337,6 +348,53 @@ Item {
                         Item { Layout.fillHeight: true }
                     }
                 }
+
+                    Card {
+                        Layout.fillWidth: true
+                        Layout.columnSpan: page.gridColumns
+                        implicitHeight: exportContent.implicitHeight + 36
+                        theme: page.theme
+
+                        ColumnLayout {
+                            id: exportContent
+                            anchors.fill: parent
+                            anchors.margins: 18
+                            spacing: 12
+
+                            Text {
+                                text: "別端末への移行"
+                                color: page.theme.text
+                                font.family: page.theme.displayFont
+                                font.pixelSize: 16
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "保存済みの設定、すべての登録姿勢・統計履歴をZIPにまとめます。設定の変更は先に「保存」してください。移行先での復元手順も同梱します。"
+                                wrapMode: Text.Wrap
+                                color: page.theme.muted
+                                font.family: page.theme.bodyFont
+                                font.pixelSize: 11
+                            }
+                            AppButton {
+                                objectName: "exportDataButton"
+                                theme: page.theme
+                                text: page.controller.exportBusy ? "エクスポート中…" : "全データをエクスポート"
+                                enabled: !page.controller.exportBusy
+                                onClicked: exportDialog.open()
+                            }
+                            Text {
+                                objectName: "exportStatusText"
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                text: page.controller.exportStatus
+                                wrapMode: Text.WrapAnywhere
+                                color: page.theme.text
+                                font.family: page.theme.bodyFont
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
 
                     UpdateCard {
                         Layout.fillWidth: true
