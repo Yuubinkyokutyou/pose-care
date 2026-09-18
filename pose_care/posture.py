@@ -32,8 +32,10 @@ class RegistrationStabilityTracker:
 
     HOLD_SECONDS = 3.0
     MIN_SAMPLES = 15
-    PREVIOUS_FRAME_THRESHOLD = 0.94
-    ANCHOR_THRESHOLD = 0.86
+    # Allow ordinary landmark jitter while keeping the captured pose close to
+    # the starting pose. Large changes still reset the hold below.
+    PREVIOUS_FRAME_THRESHOLD = 0.88
+    ANCHOR_THRESHOLD = 0.82
     LARGE_MOVEMENT_THRESHOLD = 0.70
     MISSING_RESET_SECONDS = 0.30
     REWIND_MULTIPLIER = 2.0

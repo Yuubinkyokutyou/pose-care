@@ -91,6 +91,17 @@ def test_registration_minor_jitter_keeps_progressing():
     assert state.progress_seconds == pytest.approx(0.1)
 
 
+def test_registration_completes_with_moderate_frame_jitter():
+    tracker = RegistrationStabilityTracker()
+
+    for index in range(32):
+        state = tracker.update(make_feature(0.025 * (index % 2)), now=index * 0.1)
+
+    assert state.complete
+    assert state.progress_seconds == pytest.approx(3.0)
+    assert state.sample_count >= 15
+
+
 def test_registration_movement_rewinds_then_resumes():
     tracker = RegistrationStabilityTracker()
     for index in range(11):
