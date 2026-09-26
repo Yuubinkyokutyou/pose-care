@@ -21,8 +21,8 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAction, QIcon
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtGui import QAction, QCursor, QIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from pose_care.camera import CameraWorker
 from pose_care.bone_game import BoneGame
@@ -74,6 +74,8 @@ CAMERA_RESUME_RETRY_BASE_MS = 3_000
 CAMERA_RESUME_RETRY_MAX_MS = 24_000
 CAMERA_RESUME_MAX_FAST_ATTEMPTS = 5
 CAMERA_RESUME_COOLDOWN_MS = 60_000
+REMINDER_CLEAR_SECONDS = 2.0
+REMINDER_LOST_SECONDS = 10.0
 
 
 class _LastInputInfo(ctypes.Structure):
@@ -164,6 +166,11 @@ class PoseCareController(QObject):
         self.latest_feature: PoseFeature | None = None
         self.latest_landmarks: list[Any] = []
         self._window: Any | None = None
+        self._reminder_window: Any | None = None
+        self._reminder_visible = False
+        self._reminder_profile_name = ""
+        self._reminder_good_since: float | None = None
+        self._reminder_lost_since: float | None = None
         self._monitoring = True
         self._camera_suspended_for_idle = False
         self._session_locked = False
@@ -245,6 +252,61 @@ class PoseCareController(QObject):
 
     def attach_window(self, window: Any) -> None:
         self._window = window
+
+    def attach_reminder_window(self, window: Any) -> None:
+        self._reminder_window = window
+
+    reminderProfileName = Property(
+        str, lambda self: self._reminder_profile_name, notify=uiChanged
+    )
+
+    def _show_reminder(self, profile_name: str) -> None:
+        if self._reminder_window is None:
+            return
+        if profile_name != self._reminder_profile_name:
+            self._reminder_profile_name = profile_name
+            self.uiChanged.emit()
+        if self._reminder_visible:
+            return
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self._reminder_window.setX(area.right() - self._reminder_window.width() - 15)
+            self._reminder_window.setY(area.bottom() - self._reminder_window.height() - 15)
+        self._reminder_window.show()
+        self._reminder_visible = True
+
+    def _hide_reminder(self) -> None:
+        if self._reminder_window is not None and self._reminder_visible:
+            self._reminder_window.hide()
+        self._reminder_visible = False
+        self._reminder_good_since = None
+        self._reminder_lost_since = None
+
+    def _update_reminder(self, state: DetectionState, now: float) -> None:
+        if not self._monitoring or not self.settings.notifications_enabled:
+            self._hide_reminder()
+        elif state.kind == "bad":
+            self._reminder_good_since = None
+            self._reminder_lost_since = None
+            self._show_reminder(state.profile_name or "登録した姿勢")
+        elif state.kind in ("good", "normal"):
+            self._reminder_lost_since = None
+            if self._reminder_good_since is None:
+                self._reminder_good_since = now
+            elif now - self._reminder_good_since >= REMINDER_CLEAR_SECONDS:
+                self._hide_reminder()
+        elif state.kind in ("warning", "no_pose"):
+            self._reminder_good_since = None
+            if state.kind == "no_pose":
+                if self._reminder_lost_since is None:
+                    self._reminder_lost_since = now
+                elif now - self._reminder_lost_since >= REMINDER_LOST_SECONDS:
+                    self._hide_reminder()
+            else:
+                self._reminder_lost_since = None
+        else:
+            self._hide_reminder()
 
     def show_initial_window(self) -> None:
         if self._window is None:
@@ -848,6 +910,8 @@ class PoseCareController(QObject):
         self.settings.hold_seconds = max(1.0, min(30.0, float(hold_seconds)))
         self.settings.cooldown_minutes = max(1, min(120, int(cooldown_minutes)))
         self.settings.notifications_enabled = bool(notifications_enabled)
+        if not self.settings.notifications_enabled:
+            self._hide_reminder()
         self.settings.camera_index = max(0, min(9, int(camera_index)))
         self.settings.start_minimized = bool(start_minimized)
         self.store.save(self.settings)
@@ -1275,6 +1339,7 @@ class PoseCareController(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._quitting = True
+        self._hide_reminder()
         self._bone_game.reset()
         self._update_shutdown.set()
         self._discard_prepared_update()
@@ -1521,6 +1586,7 @@ class PoseCareController(QObject):
             now=time.monotonic(),
         )
         self._set_detection_state(state)
+        self._update_reminder(state, time.monotonic())
         if state.should_notify and self.settings.notifications_enabled:
             self._send_posture_notification(state.profile_name or "登録した姿勢")
 
@@ -1606,6 +1672,8 @@ class PoseCareController(QObject):
 
     def _set_detection_state(self, state: DetectionState) -> None:
         self._state_kind = state.kind
+        if state.kind in ("paused", "idle", "locked", "starting", "unconfigured"):
+            self._hide_reminder()
         self._state_progress = state.progress
         self.history.observe(state.kind, state.profile_name)
         if state.kind == "normal":
