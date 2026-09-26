@@ -152,6 +152,12 @@ def main() -> int:
 
     window = engine.rootObjects()[0]
     controller.attach_window(window)
+    engine.load(Path(__file__).parent / "ui" / "qml" / "PostureReminder.qml")
+    if len(engine.rootObjects()) < 2:
+        controller.shutdown()
+        lock.unlock()
+        return 1
+    controller.attach_reminder_window(engine.rootObjects()[1])
     session_monitor = WindowsSessionMonitor(controller.set_session_locked)
     session_monitor.start(window)
     application.aboutToQuit.connect(session_monitor.close)
