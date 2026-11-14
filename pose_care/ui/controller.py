@@ -21,7 +21,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAction, QCursor, QIcon
+from PySide6.QtGui import QAction, QCursor, QIcon, QWindow
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from pose_care.camera import CameraWorker
@@ -183,6 +183,7 @@ class PoseCareController(QObject):
         self._history_closed = False
         self._first_run_prompted = False
         self._tray_hint_shown = False
+        self._tray_tooltip: str | None = None
         self._frame_serial = 0
         self._camera_status = "起動しています"
         self._camera_error_text = ""
@@ -252,6 +253,29 @@ class PoseCareController(QObject):
 
     def attach_window(self, window: Any) -> None:
         self._window = window
+        visibility_changed = getattr(window, "visibilityChanged", None)
+        if visibility_changed is not None:
+            visibility_changed.connect(self._sync_camera_preview)
+        self._sync_camera_preview()
+
+    def _camera_preview_wanted(self) -> bool:
+        window = self._window
+        if window is None or not window.isVisible():
+            return False
+        visibility = getattr(window, "visibility", None)
+        if callable(visibility):
+            try:
+                return visibility() not in (
+                    QWindow.Visibility.Hidden,
+                    QWindow.Visibility.Minimized,
+                )
+            except TypeError:
+                return True
+        return True
+
+    def _sync_camera_preview(self, *_args: Any) -> None:
+        if self.camera_worker is not None:
+            self.camera_worker.set_preview_enabled(self._camera_preview_wanted())
 
     def attach_reminder_window(self, window: Any) -> None:
         self._reminder_window = window
@@ -1379,6 +1403,7 @@ class PoseCareController(QObject):
         )
         worker.fps_changed.connect(self._on_fps)
         worker.finished.connect(lambda: self._on_camera_worker_finished(worker))
+        worker.set_preview_enabled(self._camera_preview_wanted())
         self.camera_worker = worker
         self._camera_start_pending = False
         worker.start()
@@ -1548,7 +1573,7 @@ class PoseCareController(QObject):
     def _on_frame(self, image: Any) -> None:
         if self._camera_is_suspended:
             return
-        if self._window is None or not self._window.isVisible():
+        if not self._camera_preview_wanted():
             return
         self.image_provider.set_image(image)
         self._bone_game.frame_width = image.width()
@@ -1732,7 +1757,11 @@ class PoseCareController(QObject):
             self._state_title = "準備中"
             self._state_detail = "カメラと姿勢モデルを起動しています"
             tooltip = "PoseCare — 起動中"
-        self.tray.setToolTip(tooltip)
+        # Each setToolTip is a Shell_NotifyIcon round trip to Explorer; this
+        # runs for every analysed frame, so only send real changes.
+        if tooltip != self._tray_tooltip:
+            self._tray_tooltip = tooltip
+            self.tray.setToolTip(tooltip)
         self.uiChanged.emit()
 
     def _send_posture_notification(self, profile_name: str) -> None:

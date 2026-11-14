@@ -15,9 +15,12 @@ class CameraImageProvider(QQuickImageProvider):
         self._image = QImage()
         self._lock = Lock()
 
+    # QImage is implicitly shared and the camera worker never touches a frame
+    # after emitting it, so sharing (not deep-copying ~3.7 MB per frame twice)
+    # is safe: any later write would detach a private copy.
     def set_image(self, image: QImage) -> None:
         with self._lock:
-            self._image = image.copy()
+            self._image = QImage(image)
 
     def clear(self) -> None:
         with self._lock:
@@ -31,7 +34,7 @@ class CameraImageProvider(QQuickImageProvider):
     ) -> QImage:
         del image_id
         with self._lock:
-            image = self._image.copy()
+            image = QImage(self._image)
         if image.isNull():
             return image
         size.setWidth(image.width())

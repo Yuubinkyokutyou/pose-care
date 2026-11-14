@@ -701,6 +701,74 @@ def test_bone_game_clicks_render_and_clean_up(tmp_path):
     assert not warnings
 
 
+def test_camera_preview_follows_main_window_visibility(tmp_path):
+    from PySide6.QtTest import QTest
+
+    class FakeWorker:
+        def __init__(self):
+            self.preview = None
+
+        def set_preview_enabled(self, enabled):
+            self.preview = enabled
+
+    application = _application()
+    provider = CameraImageProvider()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"), AppSettings(), make_app_icon(), provider,
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("camera", provider)
+    engine.rootContext().setContextProperty("controller", controller)
+    engine.load(Path(__file__).parents[1] / "pose_care/ui/qml/Main.qml")
+    window = engine.rootObjects()[0]
+    worker = FakeWorker()
+    controller.camera_worker = worker
+    controller.attach_window(window)
+    assert worker.preview is False
+
+    window.show()
+    QTest.qWait(30)
+    assert worker.preview is True
+    serial = controller._frame_serial
+    controller._on_frame(QImage(4, 4, QImage.Format.Format_RGBX8888))
+    assert controller._frame_serial == serial + 1
+
+    window.hide()
+    QTest.qWait(30)
+    assert worker.preview is False
+    controller._on_frame(QImage(4, 4, QImage.Format.Format_RGBX8888))
+    assert controller._frame_serial == serial + 1
+    controller.camera_worker = None
+    controller.shutdown()
+    application.processEvents()
+
+
+def test_tray_tooltip_is_only_sent_when_it_changes(tmp_path):
+    from pose_care.models import DetectionState
+
+    _application()
+    controller = PoseCareController(
+        SettingsStore(tmp_path / "settings.json"), AppSettings(), make_app_icon(),
+        CameraImageProvider(),
+        history=PostureHistory(tmp_path / "history.sqlite3"),
+        notifier=WindowsNotifier(toaster=object(), toast_factory=lambda fields: fields),
+        startup_registration=FakeStartupRegistration(),
+    )
+    calls = []
+    original = controller.tray.setToolTip
+    controller.tray.setToolTip = lambda text: (calls.append(text), original(text))
+
+    for similarity in (0.1, 0.2, 0.3):
+        controller._set_detection_state(DetectionState(kind="good", similarity=similarity))
+    controller._set_detection_state(DetectionState(kind="no_pose"))
+
+    assert calls == ["PoseCare — 問題なし", "PoseCare — 姿勢を探しています"]
+    controller.shutdown()
+
+
 def test_timeline_chart_exposes_hover_details():
     application = _application()
     engine = QQmlApplicationEngine()
