@@ -143,7 +143,7 @@ def test_copy_latest_frame_decodes_native_jpeg_buffer():
     frame = SharedCameraCapture._copy_latest_frame(reader)
 
     assert frame is not None
-    assert frame.shape == (2, 4, 3)
+    assert frame.shape == (2, 4, 4)
     assert frame.dtype == np.uint8
 
 
@@ -179,7 +179,7 @@ def test_copy_latest_frame_prefers_nv12_software_bitmap_over_raw_buffer():
     frame = SharedCameraCapture._copy_latest_frame(reader)
 
     assert frame is not None
-    assert frame.shape == (height, width, 3)
+    assert frame.shape == (height, width, 4)
     assert frame.dtype == np.uint8
 
 
@@ -213,4 +213,94 @@ def test_copy_latest_frame_converts_software_bitmap_and_mirrors():
     frame = SharedCameraCapture._copy_latest_frame(reader)
 
     assert frame is not None
-    assert frame.tolist() == [[[0, 0, 255], [255, 0, 0]]]
+    assert frame.shape == (1, 2, 4)
+    # Mirrored RGB: BGRA red,blue becomes RGB blue,red after the flip.
+    assert frame[..., :3].tolist() == [[[0, 0, 255], [255, 0, 0]]]
+
+
+def test_mirror_rgba_flips_whole_pixels_like_the_strided_copy():
+    rng = np.random.default_rng(7)
+    rgba = rng.integers(0, 256, (5, 7, 4), dtype=np.uint8)
+
+    mirrored = SharedCameraCapture._mirror_rgba(rgba)
+
+    assert mirrored.flags["C_CONTIGUOUS"]
+    assert np.array_equal(mirrored, rgba[:, ::-1])
+
+
+class _FakeReader:
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.acquired = 0
+
+    def try_acquire_latest_frame(self):
+        self.acquired += 1
+        return self._frames.pop(0) if self._frames else None
+
+
+def test_frame_arrival_defers_conversion_until_read(monkeypatch):
+    capture = SharedCameraCapture(0)
+    reader = _FakeReader([])
+    capture._reader = reader
+    converted = []
+    monkeypatch.setattr(
+        SharedCameraCapture,
+        "_copy_latest_frame",
+        staticmethod(lambda r: converted.append(r) or np.zeros((1, 1, 4), np.uint8)),
+    )
+
+    for _ in range(5):
+        capture._on_frame_arrived(reader, None)
+
+    assert converted == []
+    assert capture.has_pending_frame()
+    assert capture.last_frame_arrived_at is not None
+    assert capture.read().shape == (1, 1, 4)
+    assert converted == [reader]
+    assert not capture.has_pending_frame()
+    assert capture.read() is None
+
+
+def test_read_maps_conversion_failures_to_retryable_errors(monkeypatch):
+    capture = SharedCameraCapture(0)
+    capture._reader = _FakeReader([])
+
+    def fail(_reader):
+        raise OSError(-2_147_024_895, "device lost")
+
+    monkeypatch.setattr(SharedCameraCapture, "_copy_latest_frame", staticmethod(fail))
+    capture._on_frame_arrived(capture._reader, None)
+
+    with pytest.raises(CameraConnectionError, match="デバイス接続"):
+        capture.read()
+
+
+def test_background_inference_runs_at_lower_rate_and_sleeps_until_due():
+    from pose_care.camera import (
+        BACKGROUND_INFERENCE_FPS,
+        BACKGROUND_MAX_SLEEP_SECONDS,
+        FOREGROUND_INFERENCE_FPS,
+        FOREGROUND_POLL_SECONDS,
+        _idle_sleep_seconds,
+        _inference_interval,
+    )
+
+    assert _inference_interval(True) == pytest.approx(1 / FOREGROUND_INFERENCE_FPS)
+    assert _inference_interval(False) == pytest.approx(1 / BACKGROUND_INFERENCE_FPS)
+    assert _inference_interval(False) > _inference_interval(True)
+    assert _idle_sleep_seconds(True, 0.0, 0.2) == FOREGROUND_POLL_SECONDS
+    assert _idle_sleep_seconds(False, 0.0, 0.2) == BACKGROUND_MAX_SLEEP_SECONDS
+    assert _idle_sleep_seconds(False, 0.18, 0.2) == pytest.approx(0.02)
+    assert _idle_sleep_seconds(False, 0.5, 0.2) == FOREGROUND_POLL_SECONDS
+
+
+def test_preview_qimage_uses_rgba_frame_without_channel_swap():
+    from pose_care.camera import CameraWorker
+
+    rgba = np.zeros((2, 3, 4), np.uint8)
+    rgba[0, 0] = (10, 20, 30, 255)
+
+    image = CameraWorker._make_qimage(rgba, [])
+
+    assert (image.width(), image.height()) == (3, 2)
+    assert QColor(image.pixel(0, 0)).getRgb()[:3] == (10, 20, 30)

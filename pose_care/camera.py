@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 CAMERA_FRAME_STALL_TIMEOUT_SECONDS = 10.0
 CAMERA_OPERATION_TIMEOUT_SECONDS = 15.0
 CAMERA_STOP_TIMEOUT_SECONDS = 5.0
+# Pose inference rate while the camera preview is on screen (registration,
+# live skeleton, mini game) and while PoseCare only watches from the tray.
+# Posture alerts need several seconds of a held pose, so 5 fps in the
+# background is indistinguishable for notifications but costs ~1/3 the CPU.
+FOREGROUND_INFERENCE_FPS = 15.0
+BACKGROUND_INFERENCE_FPS = 5.0
+# How often the worker re-checks for frames while the preview is shown, and
+# the longest it sleeps in the background before re-checking stop requests.
+FOREGROUND_POLL_SECONDS = 0.01
+BACKGROUND_MAX_SLEEP_SECONDS = 0.05
 
 UPPER_BODY_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
@@ -103,6 +113,23 @@ def _frame_stream_stalled(last_frame_at: float, now: float) -> bool:
     return now - last_frame_at >= CAMERA_FRAME_STALL_TIMEOUT_SECONDS
 
 
+def _inference_interval(preview_enabled: bool) -> float:
+    fps = FOREGROUND_INFERENCE_FPS if preview_enabled else BACKGROUND_INFERENCE_FPS
+    return 1.0 / fps
+
+
+def _idle_sleep_seconds(
+    preview_enabled: bool,
+    since_inference: float,
+    interval: float,
+) -> float:
+    """Poll quickly while previewing; otherwise sleep until inference is due."""
+    if preview_enabled:
+        return FOREGROUND_POLL_SECONDS
+    remaining = interval - since_inference
+    return max(FOREGROUND_POLL_SECONDS, min(BACKGROUND_MAX_SLEEP_SECONDS, remaining))
+
+
 async def _wait_for_camera_operation(
     operation: Any,
     description: str,
@@ -169,9 +196,7 @@ class SharedCameraCapture:
         self._reader: Any | None = None
         self._frame_arrived_token: Any | None = None
         self._frame_available = threading.Event()
-        self._frame_lock = threading.Lock()
-        self._latest_frame: np.ndarray | None = None
-        self._frame_error: Exception | None = None
+        self._last_frame_arrived_at: float | None = None
 
     async def open(self) -> None:
         from winrt.windows.media.capture import (
@@ -290,32 +315,45 @@ class SharedCameraCapture:
         self._reader = reader
         self._frame_arrived_token = frame_arrived_token
 
-    def _on_frame_arrived(self, sender: Any, _args: Any) -> None:
-        try:
-            frame = self._copy_latest_frame(sender)
-        except Exception as error:
-            with self._frame_lock:
-                self._frame_error = error
-            self._frame_available.set()
-            return
-        if frame is None:
-            return
-        with self._frame_lock:
-            self._latest_frame = frame
+    def _on_frame_arrived(self, _sender: Any, _args: Any) -> None:
+        # Only note that a frame exists. Converting NV12 to RGB costs ~6 ms per
+        # 720p frame, so the worker acquires and converts just the frames it
+        # actually uses (all of them while previewing, a few per second in the
+        # background) instead of every frame the camera delivers.
+        self._last_frame_arrived_at = time.perf_counter()
         self._frame_available.set()
 
+    @property
+    def last_frame_arrived_at(self) -> float | None:
+        return self._last_frame_arrived_at
+
+    def has_pending_frame(self) -> bool:
+        return self._reader is not None and self._frame_available.is_set()
+
     def read(self) -> np.ndarray | None:
-        if self._reader is None or not self._frame_available.is_set():
+        """Return the newest frame as mirrored RGBA (H, W, 4), or None."""
+        reader = self._reader
+        if reader is None or not self._frame_available.is_set():
             return None
-        with self._frame_lock:
-            frame, self._latest_frame = self._latest_frame, None
-            error, self._frame_error = self._frame_error, None
-            self._frame_available.clear()
-        if error is not None:
+        self._frame_available.clear()
+        try:
+            return self._copy_latest_frame(reader)
+        except Exception as error:
             raise CameraConnectionError(
                 "カメラ映像の受信中にデバイス接続が失われました。"
             ) from error
-        return frame
+
+    @staticmethod
+    def _mirror_rgba(rgba: np.ndarray) -> np.ndarray:
+        # Flip whole 32-bit pixels at once; ~4x faster than a strided
+        # per-channel copy and yields the same bytes.
+        height, width, _channels = rgba.shape
+        pixels = rgba.reshape(height * width * 4).view(np.uint32).reshape(height, width)
+        return (
+            np.ascontiguousarray(pixels[:, ::-1])
+            .view(np.uint8)
+            .reshape(height, width, 4)
+        )
 
     @staticmethod
     def _copy_latest_frame(reader: Any) -> np.ndarray | None:
@@ -335,10 +373,10 @@ class SharedCameraCapture:
                 )
                 from winrt.windows.storage.streams import Buffer
 
-                if bitmap.bitmap_pixel_format != BitmapPixelFormat.BGRA8:
+                if bitmap.bitmap_pixel_format != BitmapPixelFormat.RGBA8:
                     converted_bitmap = SoftwareBitmap.convert(
                         bitmap,
-                        BitmapPixelFormat.BGRA8,
+                        BitmapPixelFormat.RGBA8,
                     )
 
                 readable_bitmap = converted_bitmap or bitmap
@@ -347,9 +385,8 @@ class SharedCameraCapture:
                 byte_count = width * height * 4
                 buffer = Buffer(byte_count)
                 readable_bitmap.copy_to_buffer(buffer)
-                bgra = np.frombuffer(memoryview(buffer), dtype=np.uint8, count=byte_count)
-                bgra = bgra.reshape((height, width, 4))
-                return np.ascontiguousarray(bgra[:, ::-1, 2::-1])
+                rgba = np.frombuffer(memoryview(buffer), dtype=np.uint8, count=byte_count)
+                return SharedCameraCapture._mirror_rgba(rgba.reshape((height, width, 4)))
 
             buffered_frame = reference.buffer_media_frame
             if buffered_frame is None:
@@ -359,16 +396,14 @@ class SharedCameraCapture:
             image = QImage.fromData(encoded)
             if image.isNull():
                 raise RuntimeError("共有カメラの圧縮フレームを展開できません。")
-            image = image.convertToFormat(QImage.Format.Format_RGB888)
+            image = image.convertToFormat(QImage.Format.Format_RGBX8888)
             width, height = image.width(), image.height()
-            bytes_per_line = image.bytesPerLine()
-            pixels = np.frombuffer(
+            rgba = np.frombuffer(
                 image.constBits(),
                 dtype=np.uint8,
-                count=bytes_per_line * height,
-            ).reshape((height, bytes_per_line))
-            rgb = pixels[:, : width * 3].reshape((height, width, 3))
-            return np.ascontiguousarray(rgb[:, ::-1])
+                count=width * height * 4,
+            ).reshape((height, width, 4))
+            return SharedCameraCapture._mirror_rgba(rgba)
         finally:
             if converted_bitmap is not None:
                 converted_bitmap.close()
@@ -403,10 +438,8 @@ class SharedCameraCapture:
                 capture.close()
             except Exception as error:
                 logger.warning("Failed to close camera capture: %s", error)
-        with self._frame_lock:
-            self._latest_frame = None
-            self._frame_error = None
-            self._frame_available.clear()
+        self._frame_available.clear()
+        self._last_frame_arrived_at = None
 
 
 def ensure_model(destination: Path, progress_callback=None) -> Path:
@@ -453,9 +486,22 @@ class CameraWorker(QThread):
         self.camera_index = camera_index
         self.model_file = model_file
         self._stop_event = threading.Event()
+        self._preview_enabled = threading.Event()
+        self._preview_enabled.set()
 
     def request_stop(self) -> None:
         self._stop_event.set()
+
+    def set_preview_enabled(self, enabled: bool) -> None:
+        """Render preview frames only while a window can show them."""
+        if enabled:
+            self._preview_enabled.set()
+        else:
+            self._preview_enabled.clear()
+
+    @property
+    def preview_enabled(self) -> bool:
+        return self._preview_enabled.is_set()
 
     def run(self) -> None:
         try:
@@ -502,22 +548,34 @@ class CameraWorker(QThread):
                 frames = 0
                 fps_started = time.perf_counter()
                 last_landmarks: list[Landmark] = []
+                preview_was_enabled = self._preview_enabled.is_set()
                 while not self._stop_event.is_set():
-                    rgb_frame = camera.read()
-                    if rgb_frame is None:
-                        if _frame_stream_stalled(
-                            last_frame_at,
-                            time.perf_counter(),
-                        ):
-                            raise CameraConnectionError(
-                                "カメラ映像が停止しました。接続をやり直します。"
-                            )
-                        await asyncio.sleep(0.01)
-                        continue
                     now = time.perf_counter()
-                    last_frame_at = now
-                    if now - last_inference >= (1.0 / 15.0):
-                        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                    arrived_at = camera.last_frame_arrived_at
+                    if arrived_at is not None and arrived_at > last_frame_at:
+                        last_frame_at = arrived_at
+                    if _frame_stream_stalled(last_frame_at, now):
+                        raise CameraConnectionError(
+                            "カメラ映像が停止しました。接続をやり直します。"
+                        )
+                    preview = self._preview_enabled.is_set()
+                    if preview != preview_was_enabled:
+                        preview_was_enabled = preview
+                        frames = 0
+                        fps_started = now
+                    interval = _inference_interval(preview)
+                    inference_due = now - last_inference >= interval
+                    if not camera.has_pending_frame() or not (preview or inference_due):
+                        await asyncio.sleep(
+                            _idle_sleep_seconds(preview, now - last_inference, interval)
+                        )
+                        continue
+                    rgba_frame = camera.read()
+                    if rgba_frame is None:
+                        await asyncio.sleep(FOREGROUND_POLL_SECONDS)
+                        continue
+                    if inference_due:
+                        image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=rgba_frame)
                         timestamp_ms = max(last_timestamp_ms + 1, int(now * 1000))
                         last_timestamp_ms = timestamp_ms
                         result = landmarker.detect_for_video(image, timestamp_ms)
@@ -548,8 +606,9 @@ class CameraWorker(QThread):
                                 feature = extract_pose_feature(world)
                         self.pose_ready.emit(feature, last_landmarks)
 
-                    qimage = self._make_qimage(rgb_frame, last_landmarks)
-                    self.frame_ready.emit(qimage)
+                    if preview:
+                        qimage = self._make_qimage(rgba_frame, last_landmarks)
+                        self.frame_ready.emit(qimage)
                     frames += 1
                     fps_elapsed = now - fps_started
                     if fps_elapsed >= 1.5:
@@ -565,14 +624,16 @@ class CameraWorker(QThread):
                 logger.warning("Failed to release camera after disconnect: %s", error)
 
     @classmethod
-    def _make_qimage(cls, rgb_frame: np.ndarray, landmarks: list[Landmark]) -> QImage:
-        height, width, channels = rgb_frame.shape
+    def _make_qimage(cls, rgba_frame: np.ndarray, landmarks: list[Landmark]) -> QImage:
+        height, width, channels = rgba_frame.shape
+        # RGBX8888 matches the camera buffer byte-for-byte and uploads to an
+        # RGBA texture without a per-pixel conversion.
         image = QImage(
-            rgb_frame.data,
+            rgba_frame.data,
             width,
             height,
             channels * width,
-            QImage.Format.Format_RGB888,
+            QImage.Format.Format_RGBX8888,
         ).copy()
         cls._draw_landmarks(image, landmarks)
         return image
